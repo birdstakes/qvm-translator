@@ -32,16 +32,14 @@ class RegAllocator:
             self.spills[self.spills.index(reg)] = None
 
     def spill(self, reg):
+        reg.offset = self.get_free_offset(reg)
         self.spill_callback(reg)
-        #reg.offset = self.get_free_offset(reg)
-        #self.function.bb.code.append(IR(OP_SPILL, reg.num, reg.offset))
-        #reg.num = None
+        reg.num = None
 
     def unspill(self, reg):
         self.unspill_callback(reg)
-        #self.function.bb.code.append(IR(OP_UNSPILL, reg.num, reg.offset))
-        #self.spills[reg.offset] = None
-        #reg.offset = None
+        self.spills[reg.offset] = None
+        reg.offset = None
 
     def spill_all(self):
         for reg in self.regs:
@@ -62,7 +60,6 @@ class RegAllocator:
             self.next_spill = (self.next_spill + 1) % len(self.regs)
             return last_spill
 
-    '''
     def get_free_offset(self, reg):
         try:
             idx = self.spills.index(None)
@@ -72,4 +69,3 @@ class RegAllocator:
             self.spills.append(None)
             self.spills[-1] = reg
             return len(self.spills) - 1
-    '''

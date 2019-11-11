@@ -10,6 +10,17 @@ EBP = 5
 ESI = 6
 EDI = 7
 
+COND_EQ  = 0
+COND_NE  = 1
+COND_LTI = 2
+COND_LEI = 3
+COND_GTI = 4
+COND_GEI = 5
+COND_LTU = 6
+COND_LEU = 7
+COND_GTU = 8
+COND_GEU = 9
+
 class LabelUse:
     def __init__(self, address, relative_to=0):
         self.address = address
@@ -38,9 +49,15 @@ class Assembler:
         return label
 
     def fixup_labels(self):
+        dummy_address = self.current_address()
+        self.bp()
+
         for label in self.labels:
+            if label.address is None:
+                print('warning: unbound label')
+                label.address = dummy_address
             for use in label.uses:
-                struct.pack_into('<I', self.code, use.address, label.address - use.relative_to)
+                struct.pack_into('<I', self.code, use.address, (label.address - use.relative_to) & 0xffffffff)
 
     def emit(self, data):
         self.code.extend(data)
@@ -54,6 +71,17 @@ class Assembler:
     def bp(self):
         self.emit([0xcc])
     
+    def arg(self, offset, reg):
+        modrm = 0b10000000 | ((reg & 7) << 3) | (0b100)
+        sib = 0b00100000 | ESP
+        self.emit([0x89, modrm, sib])
+        self.emit32(offset)
+
+    def call(self, label):
+        self.emit([0xe8])
+        label.uses.append(LabelUse(self.current_address(), relative_to=self.current_address() + 4))
+        self.emit32(0)
+
     def call_reg(self, reg):
         modrm = 0b11000000 | (2 << 3) | (reg & 7)
         self.emit([0xff, modrm])
@@ -69,6 +97,26 @@ class Assembler:
     def jmp_reg(self, reg):
         modrm = 0b11000000 | (4 << 3) | (reg & 7)
         self.emit([0xff, modrm])
+
+    def cmp(self, reg1, reg2):
+        modrm = 0b11000000 | ((reg2 & 7) << 3) | (reg1 & 7)
+        self.emit([0x39, modrm])
+
+    def jmp_cond(self, cond, label):
+        self.emit({
+            COND_EQ:  [0x0f, 0x84],
+            COND_NE:  [0x0f, 0x85],
+            COND_LTI: [0x0f, 0x8c],
+            COND_LEI: [0x0f, 0x8e],
+            COND_GTI: [0x0f, 0x8f],
+            COND_GEI: [0x0f, 0x8d],
+            COND_LTU: [0x0f, 0x82],
+            COND_LEU: [0x0f, 0x86],
+            COND_GTU: [0x0f, 0x87],
+            COND_GEU: [0x0f, 0x83],
+        }[cond])
+        label.uses.append(LabelUse(self.current_address(), relative_to=self.current_address() + 4))
+        self.emit32(0)
 
     def mov(self, dest_reg, src_reg):
         modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
@@ -116,10 +164,10 @@ class Assembler:
         self.emit([0x03, modrm])
 
     def sub(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
+        modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
         self.emit([0x29, modrm])
 
-    def subimm(self, dest_reg, value):
+    def sub_imm(self, dest_reg, value):
         modrm = 0b11000000 | (5 << 3) | (dest_reg & 7)
         self.emit([0x81, modrm])
         self.emit32(value)
@@ -127,6 +175,15 @@ class Assembler:
     def shl_cl(self, dest_reg):
         modrm = 0b11000000 | (4 << 3) | (dest_reg & 7)
         self.emit([0xd3, modrm])
+
+    def sext(self, reg, size):
+        modrm = 0b11000000 | ((reg & 7) << 3) | (reg & 7)
+        if size == 8:
+            self.emit([0x0f, 0xbe, modrm])
+        elif size == 16:
+            self.emit([0x0f, 0xbf, modrm])
+        else:
+            raise Exception('invalid sign extention size')
 
     def push(self, reg):
         self.emit([0x50 + reg])

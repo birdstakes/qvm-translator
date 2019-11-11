@@ -11,16 +11,17 @@ class BasicBlock:
             self.address = code[0].address
         else:
             self.address = None
-        self.predecessors = set()
-        self.successors = set()
+        self.predecessors = []
+        self.successors = []
 
     def add_successor(self, other):
-        self.successors.add(other)
-        other.predecessors.add(self)
+        assert other not in self.successors
+        assert self not in self.predecessors
+        self.successors.append(other)
+        other.predecessors.append(self)
 
     @staticmethod
     def code_to_blocks(code):
-        # TODO: clean this way the fuck up
         boundaries = set()
         blocks = {}
         basic_blocks = []
@@ -63,10 +64,13 @@ class CodeGenerator:
     def __init__(self):
         self.asm = Assembler()
         self.gprs = [EBX, ECX, EDX, ESI, EDI]
+        self.sub_labels = {}
 
     def generate(self, sub):
         # reset register use for every sub
         self.regs = RegAllocator(self.spill, self.unspill, len(self.gprs))
+        self.num_spills = 0 # how many slots to allocate for register spilling
+        self.frame_size = None
 
         bbs = BasicBlock.code_to_blocks(sub)
 
@@ -78,6 +82,7 @@ class CodeGenerator:
             bb_labels[bb].bind()
             self.successor_labels = [bb_labels[successor] for successor in bb.successors]
             il = build_il(bb)
+            self.asm.load_const(EAX, bb.address)
             for ins in il:
                 self.visit(ins)
 
@@ -85,10 +90,19 @@ class CodeGenerator:
         return self.gprs[reg.num]
 
     def spill(self, reg):
-        print(f'spill {reg}')
+        print(f'spill at {self.asm.current_address():x}')
+        if reg.offset >= self.num_spills:
+            self.num_spills = reg.offset + 1
+
+        # TODO add `mov [ebp+imm], reg` to assembler?
+        self.asm.local(EAX, -(self.frame_size + 4 + reg.offset * 4))
+        self.asm.store(EAX, self.reg_num(reg))
 
     def unspill(self, reg):
-        print(f'unspill {reg}')
+        print(f'unspill at {self.asm.current_address():x}')
+        # TODO add `mov reg, [ebp+imm]` to assembler?
+        self.asm.local(EAX, -(self.frame_size + 4 + reg.offset * 4))
+        self.asm.load(self.reg_num(reg), EAX)
 
     def visit(self, node):
         method = 'visit_' + mnemonics[node.opcode]
@@ -99,9 +113,11 @@ class CodeGenerator:
         raise Exception(f'No visit_{mnemonics[node.opcode]} method')
 
     def visit_ENTER(self, node):
+        self.frame_size = node.value
         self.asm.push(EBP)
         self.asm.mov(EBP, ESP)
-        self.asm.subimm(ESP, node.value)
+        # TODO fix this up once we know how many registers will be spilled
+        self.asm.sub_imm(ESP, node.value) 
 
     def visit_LEAVE(self, node):
         assert len(node.children) <= 1
@@ -115,12 +131,20 @@ class CodeGenerator:
 
     def visit_ARG(self, node):
         reg = self.visit(node.child)
-        self.asm.bp()
+        self.asm.arg(node.value - 8, self.reg_num(reg))
         reg.free()
 
     def visit_CALL(self, node):
-        reg = self.visit(node.child)
-        self.asm.call_reg(self.reg_num(reg))
+        if node.child.opcode == CONST:
+            target = node.child.value
+            if target not in self.sub_labels:
+                self.sub_labels[target] = self.asm.label()
+            label = self.sub_labels[target]
+            self.asm.call(label)
+            reg = self.regs.new()
+        else:
+            reg = self.visit(node.child)
+            self.asm.call_reg(self.reg_num(reg))
         self.asm.mov(self.reg_num(reg), EAX)
         return reg
 
@@ -136,7 +160,12 @@ class CodeGenerator:
 
     def visit_LOCAL(self, node):
         reg = self.regs.new()
-        self.asm.local(self.reg_num(reg), node.value)
+        self.asm.local(self.reg_num(reg), node.value - self.frame_size)
+        return reg
+
+    def visit_LOAD1(self, node):
+        reg = self.visit(node.child)
+        self.asm.load(self.reg_num(reg), self.reg_num(reg), size=8)
         return reg
 
     def visit_LOAD4(self, node):
@@ -158,6 +187,13 @@ class CodeGenerator:
         src.free()
         return dest
 
+    def visit_SUB(self, node):
+        dest = self.visit(node.left)
+        src = self.visit(node.right)
+        self.asm.sub(self.reg_num(dest), self.reg_num(src))
+        src.free()
+        return dest
+
     def visit_LSH(self, node):
         dest = self.visit(node.left)
         shift = self.visit(node.right)
@@ -173,34 +209,43 @@ class CodeGenerator:
     def visit_MULI(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        self.asm.bp()
+        print('skipping MULI')
+        self.asm.nop()
         src.free()
         return dest
 
-    def visit_JUMP(self, node):
+    def visit_SEX8(self, node):
         reg = self.visit(node.child)
-        # TODO convert to instruction index by loading from global array?
-        # could also optimize here if child is CONST (or would a separate pass with other optimizations be better?)
-        self.asm.jmp_reg(self.reg_num(reg))
-        reg.free()
+        self.asm.sext(self.reg_num(reg), 8)
+        return reg
 
-    def do_conditional_jump(self, node):
-        self.asm.bp()
+    def visit_JUMP(self, node):
+        if node.child.opcode == CONST:
+            # if it's a jump to const, successors[1] should be the target
+            self.asm.jmp(self.successor_labels[1])
+        else:
+            reg = self.visit(node.child)
+            # TODO convert to instruction index by loading from global array?
+            self.asm.jmp_reg(self.reg_num(reg))
+            reg.free()
+
+    def do_conditional_jump(self, node, cond):
         left = self.visit(node.left)
         right = self.visit(node.right)
+        self.asm.cmp(self.reg_num(left), self.reg_num(right))
+        self.asm.jmp_cond(cond, self.successor_labels[1])
         self.asm.jmp(self.successor_labels[0])
-        self.asm.jmp(self.successor_labels[1])
         left.free()
         right.free()
 
     def visit_NE(self, node):
-        self.do_conditional_jump(node)
+        self.do_conditional_jump(node, COND_NE)
 
     def visit_LTI(self, node):
-        self.do_conditional_jump(node)
+        self.do_conditional_jump(node, COND_LTI)
 
     def visit_GTI(self, node):
-        self.do_conditional_jump(node)
+        self.do_conditional_jump(node, COND_GTI)
 
 def main():
     with open('qagame.qvm', 'rb') as f:
@@ -226,8 +271,10 @@ def main():
         subs[start] = code[start:i]
 
     cg = CodeGenerator()
-    cg.generate(subs[0])
+    cg.generate(subs[0x5abb])
     cg.asm.fixup_labels()
+    with open('C:/Users/Josh/Desktop/bla', 'wb') as f:
+        f.write(cg.asm.code)
     print(binascii.hexlify(cg.asm.code).decode())
 
 if __name__ == '__main__':
