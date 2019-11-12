@@ -36,12 +36,13 @@ class Label:
         self.address = self.asm.current_address()
 
 class Assembler:
-    def __init__(self):
+    def __init__(self, base=0):
         self.code = bytearray()
         self.labels = []
+        self.base = base
 
     def current_address(self):
-        return len(self.code)
+        return len(self.code) + self.base
 
     def label(self):
         label = Label(self)
@@ -57,13 +58,17 @@ class Assembler:
                 print('warning: unbound label')
                 label.address = dummy_address
             for use in label.uses:
-                struct.pack_into('<I', self.code, use.address, (label.address - use.relative_to) & 0xffffffff)
+                struct.pack_into('<I', self.code, use.address - self.base, (label.address - use.relative_to) & 0xffffffff)
 
     def emit(self, data):
         self.code.extend(data)
 
     def emit32(self, value):
         self.emit(struct.pack('<I', value & 0xffffffff))
+
+    def align(self, n):
+        while len(self.code) % n != 0:
+            self.emit([0])
 
     def nop(self):
         self.emit([0x90])
@@ -171,6 +176,10 @@ class Assembler:
         modrm = 0b11000000 | (5 << 3) | (dest_reg & 7)
         self.emit([0x81, modrm])
         self.emit32(value)
+
+    def shl(self, dest_reg, shift):
+        modrm = 0b11000000 | (4 << 3) | (dest_reg & 7)
+        self.emit([0xc1, modrm, shift])
 
     def shl_cl(self, dest_reg):
         modrm = 0b11000000 | (4 << 3) | (dest_reg & 7)

@@ -62,9 +62,13 @@ class BasicBlock:
 
 class CodeGenerator:
     def __init__(self):
-        self.asm = Assembler()
+        self.asm = Assembler(base=0x10000000)
         self.gprs = [EBX, ECX, EDX, ESI, EDI]
-        self.sub_labels = {}
+        self.sub_labels = {} # for CONST calls
+
+        # for indirect jumps and calls
+        self.instruction_offsets = []
+        self.instruction_offsets_label = self.asm.label()
 
     def generate(self, sub):
         # reset register use for every sub
@@ -82,9 +86,28 @@ class CodeGenerator:
             bb_labels[bb].bind()
             self.successor_labels = [bb_labels[successor] for successor in bb.successors]
             il = build_il(bb)
-            self.asm.load_const(EAX, bb.address)
-            for ins in il:
-                self.visit(ins)
+            for node in il:
+                self.set_instruction_offsets(node)
+                reg = self.visit(node)
+                if reg is not None:
+                    reg.free()
+
+    def finish(self):
+        self.asm.align(4)
+        self.instruction_offsets_label.bind()
+        for instruction_offset in self.instruction_offsets:
+            self.asm.emit32(instruction_offset)
+        self.asm.fixup_labels()
+
+    def set_instruction_offsets(self, node):
+        if node.instruction.address >= len(self.instruction_offsets):
+            padding = 1 + node.instruction.address - len(self.instruction_offsets)
+            self.instruction_offsets.extend([0] * padding)
+
+        self.instruction_offsets[node.instruction.address] = self.asm.current_address()
+
+        for child in node.children:
+            self.set_instruction_offsets(child)
 
     def reg_num(self, reg):
         return self.gprs[reg.num]
@@ -128,25 +151,6 @@ class CodeGenerator:
         self.asm.mov(ESP, EBP)
         self.asm.pop(EBP)
         self.asm.ret()
-
-    def visit_ARG(self, node):
-        reg = self.visit(node.child)
-        self.asm.arg(node.value - 8, self.reg_num(reg))
-        reg.free()
-
-    def visit_CALL(self, node):
-        if node.child.opcode == CONST:
-            target = node.child.value
-            if target not in self.sub_labels:
-                self.sub_labels[target] = self.asm.label()
-            label = self.sub_labels[target]
-            self.asm.call(label)
-            reg = self.regs.new()
-        else:
-            reg = self.visit(node.child)
-            self.asm.call_reg(self.reg_num(reg))
-        self.asm.mov(self.reg_num(reg), EAX)
-        return reg
 
     def visit_PUSH(self, node):
         reg = self.regs.new()
@@ -219,13 +223,39 @@ class CodeGenerator:
         self.asm.sext(self.reg_num(reg), 8)
         return reg
 
+    def visit_ARG(self, node):
+        reg = self.visit(node.child)
+        self.asm.arg(node.value - 8, self.reg_num(reg))
+        reg.free()
+
+    def instruction_number_to_address(self, reg):
+        self.asm.shl(self.reg_num(reg), 2)
+        self.asm.load_label(EAX, self.instruction_offsets_label)
+        self.asm.add(self.reg_num(reg), EAX)
+        self.asm.load(self.reg_num(reg), self.reg_num(reg))
+
+    def visit_CALL(self, node):
+        if node.child.opcode == CONST:
+            target = node.child.value
+            if target not in self.sub_labels:
+                self.sub_labels[target] = self.asm.label()
+            label = self.sub_labels[target]
+            self.asm.call(label)
+            reg = self.regs.new()
+        else:
+            reg = self.visit(node.child)
+            self.instruction_number_to_address(reg)
+            self.asm.call_reg(self.reg_num(reg))
+        self.asm.mov(self.reg_num(reg), EAX)
+        return reg
+
     def visit_JUMP(self, node):
         if node.child.opcode == CONST:
             # if it's a jump to const, successors[1] should be the target
             self.asm.jmp(self.successor_labels[1])
         else:
             reg = self.visit(node.child)
-            # TODO convert to instruction index by loading from global array?
+            self.instruction_number_to_address(reg)
             self.asm.jmp_reg(self.reg_num(reg))
             reg.free()
 
@@ -237,6 +267,9 @@ class CodeGenerator:
         self.asm.jmp(self.successor_labels[0])
         left.free()
         right.free()
+
+    def visit_EQ(self, node):
+        self.do_conditional_jump(node, COND_EQ)
 
     def visit_NE(self, node):
         self.do_conditional_jump(node, COND_NE)
@@ -262,20 +295,23 @@ def main():
         code = disassemble(f.read(code_size))
         code = code[:instruction_count] # strip off any padding that may have been there
 
-        subs = {}
+        subs = []
         start = 0
         for i, instruction in enumerate(code):
             if i > 0 and instruction.opcode == ENTER:
-                subs[start] = code[start:i]
+                subs.append(code[start:i])
                 start = i
-        subs[start] = code[start:i]
+        subs.append(code[start:i])
 
     cg = CodeGenerator()
-    cg.generate(subs[0x5abb])
-    cg.asm.fixup_labels()
+    for sub in subs:
+        cg.generate(sub)
+    cg.finish()
+
     with open('C:/Users/Josh/Desktop/bla', 'wb') as f:
         f.write(cg.asm.code)
     print(binascii.hexlify(cg.asm.code).decode())
+
 
 if __name__ == '__main__':
     main()
