@@ -10,6 +10,15 @@ EBP = 5
 ESI = 6
 EDI = 7
 
+XMM0 = 8
+XMM1 = 9
+XMM2 = 10
+XMM3 = 11
+XMM4 = 12
+XMM5 = 13
+XMM6 = 14
+XMM7 = 15
+
 COND_EQ  = 0
 COND_NE  = 1
 COND_LTI = 2
@@ -51,14 +60,15 @@ class Assembler:
 
     def fixup_labels(self):
         dummy_address = self.current_address()
-        self.bp()
+        self.ret()
 
         for label in self.labels:
-            if label.address is None:
+            address = label.address
+            if address is None:
                 print('warning: unbound label')
-                label.address = dummy_address
+                address = dummy_address
             for use in label.uses:
-                struct.pack_into('<I', self.code, use.address - self.base, (label.address - use.relative_to) & 0xffffffff)
+                struct.pack_into('<I', self.code, use.address - self.base, (address - use.relative_to) & 0xffffffff)
 
     def emit(self, data):
         self.code.extend(data)
@@ -168,6 +178,26 @@ class Assembler:
         modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
         self.emit([0x03, modrm])
 
+    def band(self, dest_reg, src_reg):
+        modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
+        self.emit([0x29, modrm])
+
+    def bor(self, dest_reg, src_reg):
+        modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
+        self.emit([0x09, modrm])
+
+    def bxor(self, dest_reg, src_reg):
+        modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
+        self.emit([0x31, modrm])
+
+    def bnot(self, reg):
+        modrm = 0b11000000 | (2 << 3) | (reg & 7)
+        self.emit([0xf7, modrm])
+
+    def neg(self, reg):
+        modrm = 0b11000000 | (3 << 3) | (reg & 7)
+        self.emit([0xf7, modrm])
+
     def sub(self, dest_reg, src_reg):
         modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
         self.emit([0x29, modrm])
@@ -185,6 +215,14 @@ class Assembler:
         modrm = 0b11000000 | (4 << 3) | (dest_reg & 7)
         self.emit([0xd3, modrm])
 
+    def shr_cl(self, dest_reg):
+        modrm = 0b11000000 | (5 << 3) | (dest_reg & 7)
+        self.emit([0xd3, modrm])
+
+    def sar_cl(self, dest_reg):
+        modrm = 0b11000000 | (7 << 3) | (dest_reg & 7)
+        self.emit([0xd3, modrm])
+
     def sext(self, reg, size):
         modrm = 0b11000000 | ((reg & 7) << 3) | (reg & 7)
         if size == 8:
@@ -200,34 +238,59 @@ class Assembler:
     def pop(self, reg):
         self.emit([0x58 + reg])
 
+    def rep_stosb(self):
+        self.emit([0xf3, 0xaa])
+
+    def movd(self, dest_reg, src_reg):
+        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
+        if dest_reg >= XMM0 and src_reg < XMM0:
+            self.emit([0x66, 0x0f, 0x6e, modrm])
+        elif dest_reg < XMM0 and src_reg >= XMM0:
+            self.emit([0x66, 0x0f, 0x7e, modrm])
+        else:
+            raise Exception('invalid movd arguments')
+
+    def addss(self, dest_reg, src_reg):
+        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
+        self.emit([0xf3, 0x0f, 0x58, modrm])
+
+    def subss(self, dest_reg, src_reg):
+        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
+        self.emit([0xf3, 0x0f, 0x5c, modrm])
+
+    def mulss(self, dest_reg, src_reg):
+        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
+        self.emit([0xf3, 0x0f, 0x59, modrm])
+
+    def divss(self, dest_reg, src_reg):
+        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
+        self.emit([0xf3, 0x0f, 0x5e, modrm])
+
+    def cvtsi2ss(self, dest_reg, src_reg):
+        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
+        self.emit([0xf3, 0x0f, 0x2a, modrm])
+
+    def cvtss2si(self, dest_reg, src_reg):
+        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
+        self.emit([0xf3, 0x0f, 0x2d, modrm])
+
+    def ucomiss(self, reg1, reg2):
+        modrm = 0b11000000 | ((reg1 & 7) << 3) | (reg2 & 7)
+        self.emit([0x0f, 0x2e, modrm])
+
 def main():
     asm = Assembler()
 
-    l1 = asm.label()
-    l2 = asm.label()
+    asm.mulss(XMM1, XMM2)
+    asm.divss(XMM1, XMM2)
+    asm.bxor(EAX, EBX)
 
-    asm.jmp(l1)
-    asm.nop()
-    asm.nop()
-    l1.bind()
-    asm.nop()
-    asm.load_const(EBP, 123)
-    asm.mov(EAX, EBX)
-    asm.store(EBX, ECX)
-    asm.load_label(EAX, l2)
-    asm.load(EAX, EAX, size=8)
-    asm.load(EAX, EAX, size=16)
-    asm.load(EAX, EAX, size=32)
-    asm.store(EAX, EAX, size=8)
-    asm.store(EAX, EAX, size=16)
-    asm.store(EAX, EAX, size=32)
-    asm.add(EBX, EDX)
-    l2.bind()
-    asm.emit32(0x12345678)
+    asm.shl_cl(EAX)
+    asm.shr_cl(EBX)
+    asm.sar_cl(ECX)
+    asm.bnot(EDX)
 
     asm.fixup_labels()
-
-    print(asm.labels[0].address)
     print(binascii.hexlify(asm.code))
 
 if __name__ == '__main__':

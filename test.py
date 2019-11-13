@@ -15,8 +15,6 @@ class BasicBlock:
         self.successors = []
 
     def add_successor(self, other):
-        assert other not in self.successors
-        assert self not in self.predecessors
         self.successors.append(other)
         other.predecessors.append(self)
 
@@ -76,6 +74,11 @@ class CodeGenerator:
         self.num_spills = 0 # how many slots to allocate for register spilling
         self.frame_size = None
 
+        sub_address = sub[0].address
+        if sub_address not in self.sub_labels:
+            self.sub_labels[sub_address] = self.asm.label()
+        self.sub_labels[sub_address].bind()
+
         bbs = BasicBlock.code_to_blocks(sub)
 
         bb_labels = {}
@@ -110,7 +113,7 @@ class CodeGenerator:
             self.set_instruction_offsets(child)
 
     def reg_num(self, reg):
-        return self.gprs[reg.num]
+        return self.gprs[reg.get()]
 
     def spill(self, reg):
         print(f'spill at {self.asm.current_address():x}')
@@ -167,22 +170,35 @@ class CodeGenerator:
         self.asm.local(self.reg_num(reg), node.value - self.frame_size)
         return reg
 
-    def visit_LOAD1(self, node):
+    def do_load(self, node, size):
         reg = self.visit(node.child)
-        self.asm.load(self.reg_num(reg), self.reg_num(reg), size=8)
+        self.asm.load(self.reg_num(reg), self.reg_num(reg), size=size)
         return reg
+
+    def visit_LOAD1(self, node):
+        return self.do_load(node, 8)
+
+    def visit_LOAD2(self, node):
+        return self.do_load(node, 16)
 
     def visit_LOAD4(self, node):
-        reg = self.visit(node.child)
-        self.asm.load(self.reg_num(reg), self.reg_num(reg))
-        return reg
+        return self.do_load(node, 32)
 
-    def visit_STORE4(self, node):
+    def do_store(self, node, size):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        self.asm.store(self.reg_num(dest), self.reg_num(src))
+        self.asm.store(self.reg_num(dest), self.reg_num(src), size=size)
         dest.free()
         src.free()
+
+    def visit_STORE1(self, node):
+        self.do_store(node, 8)
+
+    def visit_STORE2(self, node):
+        self.do_store(node, 16)
+
+    def visit_STORE4(self, node):
+        self.do_store(node, 32)
 
     def visit_ADD(self, node):
         dest = self.visit(node.left)
@@ -210,6 +226,30 @@ class CodeGenerator:
         shift.free()
         return dest
 
+    def visit_RSHI(self, node):
+        dest = self.visit(node.left)
+        shift = self.visit(node.right)
+
+        self.asm.push(ECX)
+        self.asm.mov(ECX, self.reg_num(shift))
+        self.asm.sar_cl(self.reg_num(dest))
+        self.asm.pop(ECX)
+
+        shift.free()
+        return dest
+
+    def visit_RSHU(self, node):
+        dest = self.visit(node.left)
+        shift = self.visit(node.right)
+
+        self.asm.push(ECX)
+        self.asm.mov(ECX, self.reg_num(shift))
+        self.asm.shr_cl(self.reg_num(dest))
+        self.asm.pop(ECX)
+
+        shift.free()
+        return dest
+
     def visit_MULI(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
@@ -218,9 +258,61 @@ class CodeGenerator:
         src.free()
         return dest
 
+    def visit_DIVI(self, node):
+        dest = self.visit(node.left)
+        src = self.visit(node.right)
+        print('skipping DIVI')
+        self.asm.nop()
+        src.free()
+        return dest
+
+    def visit_MODI(self, node):
+        dest = self.visit(node.left)
+        src = self.visit(node.right)
+        print('skipping MODI')
+        self.asm.nop()
+        src.free()
+        return dest
+
+    def visit_NEGI(self, node):
+        reg = self.visit(node.child)
+        self.asm.neg(self.reg_num(reg))
+        return reg
+
+    def visit_BAND(self, node):
+        dest = self.visit(node.left)
+        src = self.visit(node.right)
+        self.asm.band(self.reg_num(dest), self.reg_num(src))
+        src.free()
+        return dest
+
+    def visit_BOR(self, node):
+        dest = self.visit(node.left)
+        src = self.visit(node.right)
+        self.asm.bor(self.reg_num(dest), self.reg_num(src))
+        src.free()
+        return dest
+
+    def visit_BXOR(self, node):
+        dest = self.visit(node.left)
+        src = self.visit(node.right)
+        self.asm.bxor(self.reg_num(dest), self.reg_num(src))
+        src.free()
+        return dest
+
+    def visit_BCOM(self, node):
+        reg = self.visit(node.child)
+        self.asm.bnot(self.reg_num(reg))
+        return reg
+
     def visit_SEX8(self, node):
         reg = self.visit(node.child)
         self.asm.sext(self.reg_num(reg), 8)
+        return reg
+
+    def visit_SEX16(self, node):
+        reg = self.visit(node.child)
+        self.asm.sext(self.reg_num(reg), 16)
         return reg
 
     def visit_ARG(self, node):
@@ -277,8 +369,135 @@ class CodeGenerator:
     def visit_LTI(self, node):
         self.do_conditional_jump(node, COND_LTI)
 
+    def visit_LEI(self, node):
+        self.do_conditional_jump(node, COND_LEI)
+
     def visit_GTI(self, node):
         self.do_conditional_jump(node, COND_GTI)
+
+    def visit_GEI(self, node):
+        self.do_conditional_jump(node, COND_GEI)
+
+    def visit_LTU(self, node):
+        self.do_conditional_jump(node, COND_LTU)
+
+    def visit_LEU(self, node):
+        self.do_conditional_jump(node, COND_LEU)
+
+    def visit_GTU(self, node):
+        self.do_conditional_jump(node, COND_GTU)
+
+    def visit_GEU(self, node):
+        self.do_conditional_jump(node, COND_GEU)
+
+    def do_conditional_jump_float(self, node, cond):
+        left = self.visit(node.left)
+        right = self.visit(node.right)
+        self.asm.movd(XMM0, self.reg_num(left))
+        self.asm.movd(XMM1, self.reg_num(right))
+        self.asm.ucomiss(XMM0, XMM1)
+        self.asm.jmp_cond(cond, self.successor_labels[1])
+        self.asm.jmp(self.successor_labels[0])
+        left.free()
+        right.free()
+
+    def visit_EQF(self, node):
+        self.do_conditional_jump_float(node, COND_EQ)
+
+    def visit_NEF(self, node):
+        self.do_conditional_jump_float(node, COND_NE)
+
+    def visit_LTF(self, node):
+        self.do_conditional_jump_float(node, COND_LTI)
+
+    def visit_LEF(self, node):
+        self.do_conditional_jump_float(node, COND_LEI)
+
+    def visit_GTF(self, node):
+        self.do_conditional_jump_float(node, COND_GTI)
+
+    def visit_GEF(self, node):
+        self.do_conditional_jump_float(node, COND_GEI)
+
+    def visit_ADDF(self, node):
+        dest = self.visit(node.left)
+        src = self.visit(node.right)
+        self.asm.movd(XMM0, self.reg_num(dest))
+        self.asm.movd(XMM1, self.reg_num(src))
+        self.asm.addss(XMM0, XMM1)
+        self.asm.movd(self.reg_num(dest), XMM0)
+        src.free()
+        return dest
+
+    def visit_SUBF(self, node):
+        dest = self.visit(node.left)
+        src = self.visit(node.right)
+        self.asm.movd(XMM0, self.reg_num(dest))
+        self.asm.movd(XMM1, self.reg_num(src))
+        self.asm.subss(XMM0, XMM1)
+        self.asm.movd(self.reg_num(dest), XMM0)
+        src.free()
+        return dest
+
+    def visit_MULF(self, node):
+        dest = self.visit(node.left)
+        src = self.visit(node.right)
+        self.asm.movd(XMM0, self.reg_num(dest))
+        self.asm.movd(XMM1, self.reg_num(src))
+        self.asm.mulss(XMM0, XMM1)
+        self.asm.movd(self.reg_num(dest), XMM0)
+        src.free()
+        return dest
+
+    def visit_DIVF(self, node):
+        dest = self.visit(node.left)
+        src = self.visit(node.right)
+        self.asm.movd(XMM0, self.reg_num(dest))
+        self.asm.movd(XMM1, self.reg_num(src))
+        self.asm.divss(XMM0, XMM1)
+        self.asm.movd(self.reg_num(dest), XMM0)
+        src.free()
+        return dest
+
+    def visit_NEGF(self, node):
+        # XXX is this ok?
+        reg = self.visit(node.child)
+        self.asm.load_const(EAX, 0x80000000)
+        self.asm.bxor(self.reg_num(reg), EAX)
+        return reg
+
+    def visit_CVIF(self, node):
+        reg = self.visit(node.child)
+        self.asm.cvtsi2ss(XMM0, self.reg_num(reg))
+        self.asm.movd(self.reg_num(reg), XMM0)
+        return reg
+
+    def visit_CVFI(self, node):
+        reg = self.visit(node.child)
+        self.asm.movd(XMM0, self.reg_num(reg))
+        self.asm.cvtss2si(self.reg_num(reg), XMM0)
+        return reg
+
+    def visit_BLOCK_COPY(self, node):
+        dest = self.visit(node.left)
+        src = self.visit(node.right)
+        size = node.value
+
+        self.asm.push(EDI)
+        self.asm.push(ESI)
+        self.asm.push(ECX)
+
+        self.asm.mov(EDI, self.reg_num(dest))
+        self.asm.mov(ESI, self.reg_num(src))
+        self.asm.load_const(ECX, size)
+        self.asm.rep_stosb()
+
+        self.asm.pop(ECX)
+        self.asm.pop(ESI)
+        self.asm.pop(EDI)
+
+        dest.free()
+        src.free()
 
 def main():
     with open('qagame.qvm', 'rb') as f:
@@ -303,14 +522,24 @@ def main():
                 start = i
         subs.append(code[start:i])
 
+    # maybe invert conditions for conditional branches?
+    # hex-rays seems like it might expect them to be the other way around
+
+    # need to save clobbered registers?
+
+    # hex-rays won't decompile sse stuff... need to use x87?
+
     cg = CodeGenerator()
-    for sub in subs:
+    for i, sub in enumerate(subs):
         cg.generate(sub)
     cg.finish()
 
+    for addr, label in cg.sub_labels.items():
+        if label.address is None:
+            print(f'unbound label at {addr:08x}')
     with open('C:/Users/Josh/Desktop/bla', 'wb') as f:
         f.write(cg.asm.code)
-    print(binascii.hexlify(cg.asm.code).decode())
+    #print(binascii.hexlify(cg.asm.code).decode())
 
 
 if __name__ == '__main__':
