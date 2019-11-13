@@ -65,8 +65,10 @@ class CodeGenerator:
         self.sub_labels = {} # for CONST calls
 
         # for indirect jumps and calls
-        self.instruction_offsets = []
-        self.instruction_offsets_label = self.asm.label()
+        self.instruction_addresses = []
+        self.instruction_addresses_label = self.asm.label()
+
+        self.invert_conditions = False
 
     def generate(self, sub):
         # reset register use for every sub
@@ -90,27 +92,38 @@ class CodeGenerator:
             self.successor_labels = [bb_labels[successor] for successor in bb.successors]
             il = build_il(bb)
             for node in il:
-                self.set_instruction_offsets(node)
+                self.set_instruction_addresses(node)
                 reg = self.visit(node)
                 if reg is not None:
                     reg.free()
 
     def finish(self):
+        # generate syscall stubs
+        for offset, label in self.sub_labels.items():
+            if offset >= 0x80000000:
+                assert label.address is None
+                label.bind()
+                self.asm.load_const(EAX, offset)
+                self.asm.syscall()
+                self.asm.ret()
+
+        # generate instruction address table
         self.asm.align(4)
-        self.instruction_offsets_label.bind()
-        for instruction_offset in self.instruction_offsets:
+        self.instruction_addresses_label.bind()
+        for instruction_offset in self.instruction_addresses:
             self.asm.emit32(instruction_offset)
+
         self.asm.fixup_labels()
 
-    def set_instruction_offsets(self, node):
-        if node.instruction.address >= len(self.instruction_offsets):
-            padding = 1 + node.instruction.address - len(self.instruction_offsets)
-            self.instruction_offsets.extend([0] * padding)
+    def set_instruction_addresses(self, node):
+        if node.instruction.address >= len(self.instruction_addresses):
+            padding = 1 + node.instruction.address - len(self.instruction_addresses)
+            self.instruction_addresses.extend([0] * padding)
 
-        self.instruction_offsets[node.instruction.address] = self.asm.current_address()
+        self.instruction_addresses[node.instruction.address] = self.asm.current_address()
 
         for child in node.children:
-            self.set_instruction_offsets(child)
+            self.set_instruction_addresses(child)
 
     def reg_num(self, reg):
         return self.gprs[reg.get()]
@@ -214,41 +227,28 @@ class CodeGenerator:
         src.free()
         return dest
 
-    def visit_LSH(self, node):
+    def do_shift(self, node, shift_func):
         dest = self.visit(node.left)
         shift = self.visit(node.right)
 
+        self.asm.mov(EAX, self.reg_num(dest)) # switch to EAX because we might be trying to shift ECX
         self.asm.push(ECX)
         self.asm.mov(ECX, self.reg_num(shift))
-        self.asm.shl_cl(self.reg_num(dest))
+        shift_func(EAX)
         self.asm.pop(ECX)
+        self.asm.mov(self.reg_num(dest), EAX)
 
         shift.free()
         return dest
+
+    def visit_LSH(self, node):
+        return self.do_shift(node, self.asm.shl_cl)
 
     def visit_RSHI(self, node):
-        dest = self.visit(node.left)
-        shift = self.visit(node.right)
-
-        self.asm.push(ECX)
-        self.asm.mov(ECX, self.reg_num(shift))
-        self.asm.sar_cl(self.reg_num(dest))
-        self.asm.pop(ECX)
-
-        shift.free()
-        return dest
+        return self.do_shift(node, self.asm.sar_cl)
 
     def visit_RSHU(self, node):
-        dest = self.visit(node.left)
-        shift = self.visit(node.right)
-
-        self.asm.push(ECX)
-        self.asm.mov(ECX, self.reg_num(shift))
-        self.asm.shr_cl(self.reg_num(dest))
-        self.asm.pop(ECX)
-
-        shift.free()
-        return dest
+        return self.do_shift(node, self.asm.shr_cl)
 
     def visit_MULI(self, node):
         dest = self.visit(node.left)
@@ -322,7 +322,7 @@ class CodeGenerator:
 
     def instruction_number_to_address(self, reg):
         self.asm.shl(self.reg_num(reg), 2)
-        self.asm.load_label(EAX, self.instruction_offsets_label)
+        self.asm.load_label(EAX, self.instruction_addresses_label)
         self.asm.add(self.reg_num(reg), EAX)
         self.asm.load(self.reg_num(reg), self.reg_num(reg))
 
@@ -355,8 +355,12 @@ class CodeGenerator:
         left = self.visit(node.left)
         right = self.visit(node.right)
         self.asm.cmp(self.reg_num(left), self.reg_num(right))
-        self.asm.jmp_cond(cond, self.successor_labels[1])
-        self.asm.jmp(self.successor_labels[0])
+        if self.invert_conditions:
+            self.asm.jmp_cond(cond_inverses[cond], self.successor_labels[0])
+            self.asm.jmp(self.successor_labels[1])
+        else:
+            self.asm.jmp_cond(cond, self.successor_labels[1])
+            self.asm.jmp(self.successor_labels[0])
         left.free()
         right.free()
 
@@ -390,14 +394,21 @@ class CodeGenerator:
     def visit_GEU(self, node):
         self.do_conditional_jump(node, COND_GEU)
 
+    # TODO: check these
+    # EQ and NE need to check for parity flag too?
+    # are the rest ok?
     def do_conditional_jump_float(self, node, cond):
         left = self.visit(node.left)
         right = self.visit(node.right)
         self.asm.movd(XMM0, self.reg_num(left))
         self.asm.movd(XMM1, self.reg_num(right))
         self.asm.ucomiss(XMM0, XMM1)
-        self.asm.jmp_cond(cond, self.successor_labels[1])
-        self.asm.jmp(self.successor_labels[0])
+        if self.invert_conditions:
+            self.asm.jmp_cond(cond_inverses[cond], self.successor_labels[0])
+            self.asm.jmp(self.successor_labels[1])
+        else:
+            self.asm.jmp_cond(cond, self.successor_labels[1])
+            self.asm.jmp(self.successor_labels[0])
         left.free()
         right.free()
 
@@ -408,16 +419,16 @@ class CodeGenerator:
         self.do_conditional_jump_float(node, COND_NE)
 
     def visit_LTF(self, node):
-        self.do_conditional_jump_float(node, COND_LTI)
+        self.do_conditional_jump_float(node, COND_LTU)
 
     def visit_LEF(self, node):
-        self.do_conditional_jump_float(node, COND_LEI)
+        self.do_conditional_jump_float(node, COND_LEU)
 
     def visit_GTF(self, node):
-        self.do_conditional_jump_float(node, COND_GTI)
+        self.do_conditional_jump_float(node, COND_GTU)
 
     def visit_GEF(self, node):
-        self.do_conditional_jump_float(node, COND_GEI)
+        self.do_conditional_jump_float(node, COND_GEU)
 
     def visit_ADDF(self, node):
         dest = self.visit(node.left)
@@ -460,7 +471,6 @@ class CodeGenerator:
         return dest
 
     def visit_NEGF(self, node):
-        # XXX is this ok?
         reg = self.visit(node.child)
         self.asm.load_const(EAX, 0x80000000)
         self.asm.bxor(self.reg_num(reg), EAX)
@@ -520,14 +530,13 @@ def main():
             if i > 0 and instruction.opcode == ENTER:
                 subs.append(code[start:i])
                 start = i
-        subs.append(code[start:i])
-
-    # maybe invert conditions for conditional branches?
-    # hex-rays seems like it might expect them to be the other way around
+        subs.append(code[start:])
 
     # need to save clobbered registers?
+    # decompilers probably won't care
 
     # hex-rays won't decompile sse stuff... need to use x87?
+    # ghidra does though
 
     cg = CodeGenerator()
     for i, sub in enumerate(subs):
@@ -537,10 +546,24 @@ def main():
     for addr, label in cg.sub_labels.items():
         if label.address is None:
             print(f'unbound label at {addr:08x}')
+
     with open('C:/Users/Josh/Desktop/bla', 'wb') as f:
         f.write(cg.asm.code)
-    #print(binascii.hexlify(cg.asm.code).decode())
 
+    qvm_map = []
+
+    with open('qagame.map', 'rb') as f:
+        for line in f:
+            type, address, name = line.split()
+            if int(type) == 0:
+                qvm_map.append((int(address, 16), name.decode()))
+
+    with open('C:/Users/Josh/Desktop/bla_symbols', 'wb') as f:
+        for address, name in qvm_map:
+            if address in cg.sub_labels:
+                label = cg.sub_labels[address]
+                assert label.address is not None
+                f.write(f'{name} {label.address:#x}\n'.encode())
 
 if __name__ == '__main__':
     main()

@@ -30,6 +30,19 @@ COND_LEU = 7
 COND_GTU = 8
 COND_GEU = 9
 
+cond_inverses = {
+    COND_EQ: COND_NE,
+    COND_NE: COND_EQ,
+    COND_LTI: COND_GEI,
+    COND_LEI: COND_GTI,
+    COND_GTI: COND_LEI,
+    COND_GEI: COND_LTI,
+    COND_LTU: COND_GEU,
+    COND_LEU: COND_GTU,
+    COND_GTU: COND_LEU,
+    COND_GEU: COND_LTU,
+}
+
 class LabelUse:
     def __init__(self, address, relative_to=0):
         self.address = address
@@ -147,7 +160,6 @@ class Assembler:
         self.emit32(0)
 
     def load(self, dest_reg, src_reg, size=32):
-        # TODO zero/sign extend
         modrm = ((dest_reg & 7) << 3) | (src_reg & 7)
         if size == 32:
             self.emit([0x8b, modrm])
@@ -242,10 +254,11 @@ class Assembler:
         self.emit([0xf3, 0xaa])
 
     def movd(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
         if dest_reg >= XMM0 and src_reg < XMM0:
+            modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
             self.emit([0x66, 0x0f, 0x6e, modrm])
         elif dest_reg < XMM0 and src_reg >= XMM0:
+            modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
             self.emit([0x66, 0x0f, 0x7e, modrm])
         else:
             raise Exception('invalid movd arguments')
@@ -278,17 +291,14 @@ class Assembler:
         modrm = 0b11000000 | ((reg1 & 7) << 3) | (reg2 & 7)
         self.emit([0x0f, 0x2e, modrm])
 
+    def syscall(self):
+        self.emit([0x0f, 0x05])
+
 def main():
     asm = Assembler()
 
-    asm.mulss(XMM1, XMM2)
-    asm.divss(XMM1, XMM2)
-    asm.bxor(EAX, EBX)
-
-    asm.shl_cl(EAX)
-    asm.shr_cl(EBX)
-    asm.sar_cl(ECX)
-    asm.bnot(EDX)
+    asm.movd(XMM1, EAX)
+    asm.movd(EAX, XMM2)
 
     asm.fixup_labels()
     print(binascii.hexlify(asm.code))
