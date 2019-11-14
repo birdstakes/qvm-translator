@@ -498,7 +498,7 @@ class CodeGenerator:
     def visit_CVFI(self, node):
         reg = self.visit(node.child)
         self.asm.movd(XMM0, self.reg_num(reg))
-        self.asm.cvtss2si(self.reg_num(reg), XMM0)
+        self.asm.cvttss2si(self.reg_num(reg), XMM0)
         return reg
 
     def visit_BLOCK_COPY(self, node):

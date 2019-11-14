@@ -283,9 +283,9 @@ class Assembler:
         modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
         self.emit([0xf3, 0x0f, 0x2a, modrm])
 
-    def cvtss2si(self, dest_reg, src_reg):
+    def cvttss2si(self, dest_reg, src_reg):
         modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
-        self.emit([0xf3, 0x0f, 0x2d, modrm])
+        self.emit([0xf3, 0x0f, 0x2c, modrm])
 
     def ucomiss(self, reg1, reg2):
         modrm = 0b11000000 | ((reg1 & 7) << 3) | (reg2 & 7)
