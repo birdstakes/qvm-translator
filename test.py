@@ -210,11 +210,11 @@ class CodeGenerator:
         return self.do_load(node, 32)
 
     def do_store(self, node, size):
-        dest = self.visit(node.left)
         src = self.visit(node.right)
+        dest = self.visit(node.left)
         self.asm.store(self.reg_num(dest), self.reg_num(src), size=size)
-        dest.free()
         src.free()
+        dest.free()
 
     def visit_STORE1(self, node):
         self.do_store(node, 8)
