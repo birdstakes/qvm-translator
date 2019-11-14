@@ -1,4 +1,5 @@
 import binascii
+import struct
 from assembler import *
 from disassembler import *
 from il import *
@@ -74,7 +75,9 @@ class CodeGenerator:
         # reset register use for every sub
         self.regs = RegAllocator(self.spill, self.unspill, len(self.gprs))
         self.num_spills = 0 # how many slots to allocate for register spilling
+        self.arg_size = 0
         self.frame_size = None
+        self.frame_size_fixup = None
 
         sub_address = sub[0].address
         if sub_address not in self.sub_labels:
@@ -96,6 +99,15 @@ class CodeGenerator:
                 reg = self.visit(node)
                 if reg is not None:
                     reg.free()
+
+        assert self.frame_size is not None and self.frame_size_fixup is not None
+        # i think this is actually too big because of arguments are included
+        # in the original frame size, but whatever. we'd have to also fix up
+        # spills to fix this instead of putting them at sp - frame_size
+        frame_size = self.frame_size + self.arg_size + self.num_spills * 4
+
+        # TODO: this is ugly, maybe add another kind of fixup for arbitrary constants?
+        struct.pack_into('<I', self.asm.code, self.frame_size_fixup - self.asm.base, frame_size)
 
     def finish(self):
         # generate syscall stubs
@@ -155,7 +167,7 @@ class CodeGenerator:
         self.frame_size = node.value
         self.asm.push(EBP)
         self.asm.mov(EBP, ESP)
-        # TODO fix this up once we know how many registers will be spilled
+        self.frame_size_fixup = self.asm.current_address() + 2
         self.asm.sub_imm(ESP, node.value) 
 
     def visit_LEAVE(self, node):
@@ -316,6 +328,7 @@ class CodeGenerator:
         return reg
 
     def visit_ARG(self, node):
+        self.arg_size = max(self.arg_size, node.value - 4)
         reg = self.visit(node.child)
         self.asm.arg(node.value - 8, self.reg_num(reg))
         reg.free()
