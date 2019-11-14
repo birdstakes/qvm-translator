@@ -192,7 +192,7 @@ class Assembler:
 
     def band(self, dest_reg, src_reg):
         modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
-        self.emit([0x29, modrm])
+        self.emit([0x21, modrm])
 
     def bor(self, dest_reg, src_reg):
         modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
