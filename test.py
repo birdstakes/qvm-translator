@@ -265,24 +265,32 @@ class CodeGenerator:
     def visit_MULI(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        print('skipping MULI')
-        self.asm.nop()
+        self.asm.imul(self.reg_num(dest), self.reg_num(src))
         src.free()
         return dest
 
     def visit_DIVI(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        print('skipping DIVI')
-        self.asm.nop()
+        self.asm.push(EDX)
+        self.asm.mov(EAX, self.reg_num(dest))
+        self.asm.cdq()
+        self.asm.idiv(self.reg_num(src))
+        self.asm.pop(EDX)
+        self.asm.mov(self.reg_num(dest), EAX)
         src.free()
         return dest
 
     def visit_MODI(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        print('skipping MODI')
-        self.asm.nop()
+        self.asm.push(EDX)
+        self.asm.mov(EAX, self.reg_num(dest))
+        self.asm.cdq()
+        self.asm.idiv(self.reg_num(src))
+        self.asm.mov(EAX, EDX)
+        self.asm.pop(EDX)
+        self.asm.mov(self.reg_num(dest), EAX)
         src.free()
         return dest
 

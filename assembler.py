@@ -219,6 +219,14 @@ class Assembler:
         self.emit([0x81, modrm])
         self.emit32(value)
 
+    def imul(self, dest_reg, src_reg):
+        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
+        self.emit([0x0f, 0xaf, modrm])
+
+    def idiv(self, reg):
+        modrm = 0b11000000 | (7 << 3) | (reg & 7)
+        self.emit([0xf7, modrm])
+
     def shl(self, dest_reg, shift):
         modrm = 0b11000000 | (4 << 3) | (dest_reg & 7)
         self.emit([0xc1, modrm, shift])
@@ -252,6 +260,9 @@ class Assembler:
 
     def rep_stosb(self):
         self.emit([0xf3, 0xaa])
+
+    def cdq(self):
+        self.emit([0x99])
 
     def movd(self, dest_reg, src_reg):
         if dest_reg >= XMM0 and src_reg < XMM0:
