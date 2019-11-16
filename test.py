@@ -62,7 +62,6 @@ class BasicBlock:
 class CodeGenerator:
     def __init__(self):
         self.asm = Assembler(base=0x10000000)
-        self.gprs = [EBX, ECX, EDX, ESI, EDI]
         self.sub_labels = {} # for CONST calls
 
         # for indirect jumps and calls
@@ -73,7 +72,7 @@ class CodeGenerator:
 
     def generate(self, sub):
         # reset register use for every sub
-        self.regs = RegAllocator(self.spill, self.unspill, len(self.gprs))
+        self.regs = RegAllocator(self.spill, self.unspill, [EBX, ECX, EDX, ESI, EDI])
         self.num_spills = 0 # how many slots to allocate for register spilling
         self.arg_size = 0
         self.frame_size = None
@@ -137,9 +136,6 @@ class CodeGenerator:
         for child in node.children:
             self.set_instruction_addresses(child)
 
-    def reg_num(self, reg):
-        return self.gprs[reg.get()]
-
     def spill(self, reg):
         print(f'spill at {self.asm.current_address():x}')
         if reg.offset >= self.num_spills:
@@ -147,13 +143,13 @@ class CodeGenerator:
 
         # TODO add `mov [ebp+imm], reg` to assembler?
         self.asm.local(EAX, -(self.frame_size + 4 + reg.offset * 4))
-        self.asm.store(EAX, self.reg_num(reg))
+        self.asm.store(EAX, reg.get())
 
     def unspill(self, reg):
         print(f'unspill at {self.asm.current_address():x}')
         # TODO add `mov reg, [ebp+imm]` to assembler?
         self.asm.local(EAX, -(self.frame_size + 4 + reg.offset * 4))
-        self.asm.load(self.reg_num(reg), EAX)
+        self.asm.load(reg.get(), EAX)
 
     def visit(self, node):
         method = 'visit_' + mnemonics[node.opcode]
@@ -174,7 +170,7 @@ class CodeGenerator:
         assert len(node.children) <= 1
         if len(node.children) == 1:
             reg = self.visit(node.child)
-            self.asm.mov(EAX, self.reg_num(reg))
+            self.asm.mov(EAX, reg.get())
             reg.free()
         self.asm.mov(ESP, EBP)
         self.asm.pop(EBP)
@@ -182,22 +178,22 @@ class CodeGenerator:
 
     def visit_PUSH(self, node):
         reg = self.regs.new()
-        self.asm.load_const(self.reg_num(reg), 0)
+        self.asm.load_const(reg.get(), 0)
         return reg
 
     def visit_CONST(self, node):
         reg = self.regs.new()
-        self.asm.load_const(self.reg_num(reg), node.value)
+        self.asm.load_const(reg.get(), node.value)
         return reg
 
     def visit_LOCAL(self, node):
         reg = self.regs.new()
-        self.asm.local(self.reg_num(reg), node.value - self.frame_size)
+        self.asm.local(reg.get(), node.value - self.frame_size)
         return reg
 
     def do_load(self, node, size):
         reg = self.visit(node.child)
-        self.asm.load(self.reg_num(reg), self.reg_num(reg), size=size)
+        self.asm.load(reg.get(), reg.get(), size=size)
         return reg
 
     def visit_LOAD1(self, node):
@@ -212,7 +208,7 @@ class CodeGenerator:
     def do_store(self, node, size):
         src = self.visit(node.right)
         dest = self.visit(node.left)
-        self.asm.store(self.reg_num(dest), self.reg_num(src), size=size)
+        self.asm.store(dest.get(), src.get(), size=size)
         src.free()
         dest.free()
 
@@ -228,14 +224,14 @@ class CodeGenerator:
     def visit_ADD(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        self.asm.add(self.reg_num(dest), self.reg_num(src))
+        self.asm.add(dest.get(), src.get())
         src.free()
         return dest
 
     def visit_SUB(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        self.asm.sub(self.reg_num(dest), self.reg_num(src))
+        self.asm.sub(dest.get(), src.get())
         src.free()
         return dest
 
@@ -243,12 +239,12 @@ class CodeGenerator:
         dest = self.visit(node.left)
         shift = self.visit(node.right)
 
-        self.asm.mov(EAX, self.reg_num(dest)) # switch to EAX because we might be trying to shift ECX
+        self.asm.mov(EAX, dest.get()) # switch to EAX because we might be trying to shift ECX
         self.asm.push(ECX)
-        self.asm.mov(ECX, self.reg_num(shift))
+        self.asm.mov(ECX, shift.get())
         shift_func(EAX)
         self.asm.pop(ECX)
-        self.asm.mov(self.reg_num(dest), EAX)
+        self.asm.mov(dest.get(), EAX)
 
         shift.free()
         return dest
@@ -265,7 +261,7 @@ class CodeGenerator:
     def visit_MULI(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        self.asm.imul(self.reg_num(dest), self.reg_num(src))
+        self.asm.imul(dest.get(), src.get())
         src.free()
         return dest
 
@@ -273,11 +269,11 @@ class CodeGenerator:
         dest = self.visit(node.left)
         src = self.visit(node.right)
         self.asm.push(EDX)
-        self.asm.mov(EAX, self.reg_num(dest))
+        self.asm.mov(EAX, dest.get())
         self.asm.cdq()
-        self.asm.idiv(self.reg_num(src))
+        self.asm.idiv(src.get())
         self.asm.pop(EDX)
-        self.asm.mov(self.reg_num(dest), EAX)
+        self.asm.mov(dest.get(), EAX)
         src.free()
         return dest
 
@@ -285,67 +281,67 @@ class CodeGenerator:
         dest = self.visit(node.left)
         src = self.visit(node.right)
         self.asm.push(EDX)
-        self.asm.mov(EAX, self.reg_num(dest))
+        self.asm.mov(EAX, dest.get())
         self.asm.cdq()
-        self.asm.idiv(self.reg_num(src))
+        self.asm.idiv(src.get())
         self.asm.mov(EAX, EDX)
         self.asm.pop(EDX)
-        self.asm.mov(self.reg_num(dest), EAX)
+        self.asm.mov(dest.get(), EAX)
         src.free()
         return dest
 
     def visit_NEGI(self, node):
         reg = self.visit(node.child)
-        self.asm.neg(self.reg_num(reg))
+        self.asm.neg(reg.get())
         return reg
 
     def visit_BAND(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        self.asm.band(self.reg_num(dest), self.reg_num(src))
+        self.asm.band(dest.get(), src.get())
         src.free()
         return dest
 
     def visit_BOR(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        self.asm.bor(self.reg_num(dest), self.reg_num(src))
+        self.asm.bor(dest.get(), src.get())
         src.free()
         return dest
 
     def visit_BXOR(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        self.asm.bxor(self.reg_num(dest), self.reg_num(src))
+        self.asm.bxor(dest.get(), src.get())
         src.free()
         return dest
 
     def visit_BCOM(self, node):
         reg = self.visit(node.child)
-        self.asm.bnot(self.reg_num(reg))
+        self.asm.bnot(reg.get())
         return reg
 
     def visit_SEX8(self, node):
         reg = self.visit(node.child)
-        self.asm.sext(self.reg_num(reg), 8)
+        self.asm.sext(reg.get(), 8)
         return reg
 
     def visit_SEX16(self, node):
         reg = self.visit(node.child)
-        self.asm.sext(self.reg_num(reg), 16)
+        self.asm.sext(reg.get(), 16)
         return reg
 
     def visit_ARG(self, node):
         self.arg_size = max(self.arg_size, node.value - 4)
         reg = self.visit(node.child)
-        self.asm.arg(node.value - 8, self.reg_num(reg))
+        self.asm.arg(node.value - 8, reg.get())
         reg.free()
 
     def instruction_number_to_address(self, reg):
-        self.asm.shl(self.reg_num(reg), 2)
+        self.asm.shl(reg.get(), 2)
         self.asm.load_label(EAX, self.instruction_addresses_label)
-        self.asm.add(self.reg_num(reg), EAX)
-        self.asm.load(self.reg_num(reg), self.reg_num(reg))
+        self.asm.add(reg.get(), EAX)
+        self.asm.load(reg.get(), reg.get())
 
     def visit_CALL(self, node):
         if node.child.opcode == CONST:
@@ -358,8 +354,8 @@ class CodeGenerator:
         else:
             reg = self.visit(node.child)
             self.instruction_number_to_address(reg)
-            self.asm.call_reg(self.reg_num(reg))
-        self.asm.mov(self.reg_num(reg), EAX)
+            self.asm.call_reg(reg.get())
+        self.asm.mov(reg.get(), EAX)
         return reg
 
     def visit_JUMP(self, node):
@@ -369,13 +365,13 @@ class CodeGenerator:
         else:
             reg = self.visit(node.child)
             self.instruction_number_to_address(reg)
-            self.asm.jmp_reg(self.reg_num(reg))
+            self.asm.jmp_reg(reg.get())
             reg.free()
 
     def do_conditional_jump(self, node, cond):
         left = self.visit(node.left)
         right = self.visit(node.right)
-        self.asm.cmp(self.reg_num(left), self.reg_num(right))
+        self.asm.cmp(left.get(), right.get())
         if self.invert_conditions:
             self.asm.jmp_cond(cond_inverses[cond], self.successor_labels[0])
             self.asm.jmp(self.successor_labels[1])
@@ -421,8 +417,8 @@ class CodeGenerator:
     def do_conditional_jump_float(self, node, cond):
         left = self.visit(node.left)
         right = self.visit(node.right)
-        self.asm.movd(XMM0, self.reg_num(left))
-        self.asm.movd(XMM1, self.reg_num(right))
+        self.asm.movd(XMM0, left.get())
+        self.asm.movd(XMM1, right.get())
         self.asm.ucomiss(XMM0, XMM1)
         if self.invert_conditions:
             self.asm.jmp_cond(cond_inverses[cond], self.successor_labels[0])
@@ -454,59 +450,59 @@ class CodeGenerator:
     def visit_ADDF(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        self.asm.movd(XMM0, self.reg_num(dest))
-        self.asm.movd(XMM1, self.reg_num(src))
+        self.asm.movd(XMM0, dest.get())
+        self.asm.movd(XMM1, src.get())
         self.asm.addss(XMM0, XMM1)
-        self.asm.movd(self.reg_num(dest), XMM0)
+        self.asm.movd(dest.get(), XMM0)
         src.free()
         return dest
 
     def visit_SUBF(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        self.asm.movd(XMM0, self.reg_num(dest))
-        self.asm.movd(XMM1, self.reg_num(src))
+        self.asm.movd(XMM0, dest.get())
+        self.asm.movd(XMM1, src.get())
         self.asm.subss(XMM0, XMM1)
-        self.asm.movd(self.reg_num(dest), XMM0)
+        self.asm.movd(dest.get(), XMM0)
         src.free()
         return dest
 
     def visit_MULF(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        self.asm.movd(XMM0, self.reg_num(dest))
-        self.asm.movd(XMM1, self.reg_num(src))
+        self.asm.movd(XMM0, dest.get())
+        self.asm.movd(XMM1, src.get())
         self.asm.mulss(XMM0, XMM1)
-        self.asm.movd(self.reg_num(dest), XMM0)
+        self.asm.movd(dest.get(), XMM0)
         src.free()
         return dest
 
     def visit_DIVF(self, node):
         dest = self.visit(node.left)
         src = self.visit(node.right)
-        self.asm.movd(XMM0, self.reg_num(dest))
-        self.asm.movd(XMM1, self.reg_num(src))
+        self.asm.movd(XMM0, dest.get())
+        self.asm.movd(XMM1, src.get())
         self.asm.divss(XMM0, XMM1)
-        self.asm.movd(self.reg_num(dest), XMM0)
+        self.asm.movd(dest.get(), XMM0)
         src.free()
         return dest
 
     def visit_NEGF(self, node):
         reg = self.visit(node.child)
         self.asm.load_const(EAX, 0x80000000)
-        self.asm.bxor(self.reg_num(reg), EAX)
+        self.asm.bxor(reg.get(), EAX)
         return reg
 
     def visit_CVIF(self, node):
         reg = self.visit(node.child)
-        self.asm.cvtsi2ss(XMM0, self.reg_num(reg))
-        self.asm.movd(self.reg_num(reg), XMM0)
+        self.asm.cvtsi2ss(XMM0, reg.get())
+        self.asm.movd(reg.get(), XMM0)
         return reg
 
     def visit_CVFI(self, node):
         reg = self.visit(node.child)
-        self.asm.movd(XMM0, self.reg_num(reg))
-        self.asm.cvttss2si(self.reg_num(reg), XMM0)
+        self.asm.movd(XMM0, reg.get())
+        self.asm.cvttss2si(reg.get(), XMM0)
         return reg
 
     def visit_BLOCK_COPY(self, node):
@@ -518,8 +514,8 @@ class CodeGenerator:
         self.asm.push(ESI)
         self.asm.push(ECX)
 
-        self.asm.mov(EDI, self.reg_num(dest))
-        self.asm.mov(ESI, self.reg_num(src))
+        self.asm.mov(EDI, dest.get())
+        self.asm.mov(ESI, src.get())
         self.asm.load_const(ECX, size)
         self.asm.rep_stosb()
 

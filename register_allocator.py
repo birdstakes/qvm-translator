@@ -8,17 +8,18 @@ class Reg:
         if self.num is None:
             self.num = self.parent.get_free_num(self)
             self.parent.unspill(self)
-        return self.num
+        return self.parent.target_regs[self.num]
 
     def free(self):
         self.parent.free(self)
 
 class RegAllocator:
-    def __init__(self, spill_callback, unspill_callback, num_regs):
+    def __init__(self, spill_callback, unspill_callback, target_regs):
         self.spill_callback = spill_callback
         self.unspill_callback = unspill_callback
-        self.num_regs = num_regs
-        self.regs = [None]*num_regs
+        self.target_regs = target_regs
+        self.num_regs = len(target_regs)
+        self.regs = [None]*self.num_regs
         self.spills = []
         self.next_spill = 0
 
