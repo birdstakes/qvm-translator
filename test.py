@@ -1,5 +1,7 @@
+import argparse
 import binascii
 import struct
+import sys
 from assembler import *
 from disassembler import *
 from il import *
@@ -137,7 +139,6 @@ class CodeGenerator:
             self.set_instruction_addresses(child)
 
     def spill(self, reg):
-        print(f'spill at {self.asm.current_address():x}')
         if reg.offset >= self.num_spills:
             self.num_spills = reg.offset + 1
 
@@ -146,7 +147,6 @@ class CodeGenerator:
         self.asm.store(EAX, reg.get())
 
     def unspill(self, reg):
-        print(f'unspill at {self.asm.current_address():x}')
         # TODO add `mov reg, [ebp+imm]` to assembler?
         self.asm.local(EAX, -(self.frame_size + 4 + reg.offset * 4))
         self.asm.load(reg.get(), EAX)
@@ -527,8 +527,19 @@ class CodeGenerator:
         src.free()
 
 def main():
-    with open('qagame.qvm', 'rb') as f:
-        magic             = f.read(4)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('input', help='the qvm to translate')
+    parser.add_argument('output', help='the resulting x86 code')
+    parser.add_argument('--map', help='a q3asm map file')
+    parser.add_argument('--symbols', help='dump symbols to SYMBOLS')
+    parser.add_argument('--data', help='dump the data section to DATA') # TODO
+    parser.add_argument('--lit',  help='dump the lit section to LIT') # TODO
+    args = parser.parse_args()
+
+    with open(args.input, 'rb') as f:
+        magic             = int.from_bytes(f.read(4), 'little')
+        if magic != 0x12721444:
+            sys.exit('Not a valid qvm file')
         instruction_count = int.from_bytes(f.read(4), 'little')
         code_offset       = int.from_bytes(f.read(4), 'little')
         code_size         = int.from_bytes(f.read(4), 'little')
@@ -540,6 +551,12 @@ def main():
         f.seek(code_offset)
         code = disassemble(f.read(code_size))
         code = code[:instruction_count] # strip off any padding that may have been there
+
+        f.seek(data_offset)
+        data = f.read(data_size)
+
+        f.seek(data_offset + data_size)
+        lit = f.read(lit_size)
 
         subs = []
         start = 0
@@ -560,27 +577,39 @@ def main():
         cg.generate(sub)
     cg.finish()
 
-    for addr, label in cg.sub_labels.items():
-        if label.address is None:
-            print(f'unbound label at {addr:08x}')
-
-    with open('C:/Users/Josh/Desktop/bla', 'wb') as f:
+    with open(args.output, 'wb') as f:
         f.write(cg.asm.code)
 
     qvm_map = []
 
-    with open('qagame.map', 'rb') as f:
-        for line in f:
-            type, address, name = line.split()
-            if int(type) == 0:
-                qvm_map.append((int(address, 16), name.decode()))
+    if args.map:
+        with open(args.map, 'rb') as f:
+            for line in f:
+                type, address, name = line.split()
+                if int(type) == 0:
+                    qvm_map.append((int(address, 16), name.decode()))
 
-    with open('C:/Users/Josh/Desktop/bla_symbols', 'wb') as f:
-        for address, name in qvm_map:
-            if address in cg.sub_labels:
-                label = cg.sub_labels[address]
-                assert label.address is not None
-                f.write(f'{name} {label.address:#x}\n'.encode())
+    if args.symbols:
+        with open(args.symbols, 'wb') as f:
+            for address, name in qvm_map:
+                if address in cg.sub_labels:
+                    label = cg.sub_labels[address]
+                    assert label.address is not None
+                    f.write(f'{name} {label.address:#x}\n'.encode())
+
+            f.write(f'__instruction_addresses {cg.instruction_addresses_label.address:#x}\n'.encode())
+
+    if args.data:
+        with open(args.data, 'wb') as f:
+            f.write(data)
+
+    if args.lit:
+        with open(args.lit, 'wb') as f:
+            f.write(lit)
+
+    print(f'data segment: offset = {0:#8x} size = {data_size:#8x}')
+    print(f'lit  segment: offset = {data_size:#8x} size = {lit_size:#8x}')
+    print(f'bss  segment: offset = {data_size+lit_size:#8x} size = {bss_size:#8x}')
 
 if __name__ == '__main__':
     main()
