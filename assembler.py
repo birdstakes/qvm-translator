@@ -1,47 +1,249 @@
-import binascii
+import copy
 import struct
+import sys
 
-EAX = 0
-ECX = 1
-EDX = 2
-EBX = 3
-ESP = 4
-EBP = 5
-ESI = 6
-EDI = 7
+def modrm(mod, rm, reg):
+    assert 0 <= mod <= 0b11
+    assert 0 <= rm <= 0b111
+    assert 0 <= reg <= 0b111
+    return (mod << 6) | (reg << 3) | rm
 
-XMM0 = 8
-XMM1 = 9
-XMM2 = 10
-XMM3 = 11
-XMM4 = 12
-XMM5 = 13
-XMM6 = 14
-XMM7 = 15
+def sib(scale, index, base):
+    scale = [1, 2, 4, 8].index(scale)
+    return (scale << 6) | (index<< 3) | base
 
-COND_EQ  = 0
-COND_NE  = 1
-COND_LTI = 2
-COND_LEI = 3
-COND_GTI = 4
-COND_GEI = 5
-COND_LTU = 6
-COND_LEU = 7
-COND_GTU = 8
-COND_GEU = 9
+class Rm32:
+    def modrm_bytes(self, reg):
+        raise NotImplementedError
 
-cond_inverses = {
-    COND_EQ: COND_NE,
-    COND_NE: COND_EQ,
-    COND_LTI: COND_GEI,
-    COND_LEI: COND_GTI,
-    COND_GTI: COND_LEI,
-    COND_GEI: COND_LTI,
-    COND_LTU: COND_GEU,
-    COND_LEU: COND_GTU,
-    COND_GTU: COND_LEU,
-    COND_GEU: COND_LTU,
-}
+class R8:
+    def __init__(self, name, num):
+        self.name = name
+        self.num = num
+
+class R16:
+    def __init__(self, name, num):
+        self.name = name
+        self.num = num
+
+class XMM:
+    def __init__(self, name, num):
+        self.name = name
+        self.num = num
+
+class R32(Rm32):
+    def __init__(self, name, num):
+        self.name = name
+        self.num = num
+
+    def modrm_bytes(self, reg):
+        return bytearray([modrm(0b11, self.num, reg)])
+
+    def __add__(self, other):
+        return EffectiveAddress(base=self) + other
+
+    def __radd__(self, other):
+        return self + other
+
+    def __sub__(self, other):
+        return EffectiveAddress(base=self) + -other
+
+    def __mul__(self, other):
+        return EffectiveAddress(index=self, scale=other)
+
+class EffectiveAddress(Rm32):
+    def __init__(self, base=None, index=None, scale=None, disp=None):
+        self.base = base
+        self.index = index
+        self.scale = scale
+        self.disp = disp
+
+    @staticmethod
+    def from_list(l):
+        assert len(l) == 1
+        if isinstance(l[0], EffectiveAddress):
+            return l[0]
+
+        elif isinstance(l[0], R32):
+            return EffectiveAddress(base=l[0])
+
+        elif isinstance(l[0], int):
+            return EffectiveAddress(disp=l[0])
+
+        else:
+            raise Exception('invalid memory reference')
+
+    def only_base(self):
+        if self.base is None:
+            return False
+        if self.scale is not None:
+            return False
+        if self.index is not None:
+            return False
+        if self.disp is not None:
+            return False
+        return True
+
+    def only_disp(self):
+        if self.base is not None:
+            return False
+        if self.scale is not None:
+            return False
+        if self.index is not None:
+            return False
+        if self.disp is None:
+            return False
+        return True
+
+    def only_base_disp(self):
+        if self.base is None:
+            return False
+        if self.scale is not None:
+            return False
+        if self.index is not None:
+            return False
+        if self.disp is None:
+            return False
+        return True
+
+    def modrm_bytes(self, reg):
+        res = bytearray()
+
+        # there is no [reg] addressing mode for ebp, so add 0 displacement
+        if self.base == EBP and self.disp is None:
+            self.disp = 0
+
+        scale = self.scale
+        if scale is None:
+            scale = 1
+
+        if self.index is not None:
+            if self.index == ESP:
+                raise Exception('invalid index')
+            index = self.index.num
+        else:
+            index = 0b100
+
+        if self.disp is not None:
+            small_disp = not self.only_disp() and -128 <= self.disp <= 127
+
+        #
+        # [base]
+        #
+        # fall through to general case for ESP because rm=0b100 means [SIB] instead of [reg]
+        # fall through to general case for EBP because rm=0b101 means [disp32]
+        if self.only_base() and self.base not in (EBP, ESP):
+            res.append(modrm(mod=0b00, rm=self.base.num, reg=reg))
+            return res
+
+        #
+        # [base + disp]
+        #
+        # fall through to general case for ESP because rm=0b100 means [SIB + disp] instead of [reg + disp]
+        elif self.only_base_disp() and self.base != ESP:
+            if small_disp:
+                res.append(modrm(mod=0b01, rm=self.base.num, reg=reg))
+            else:
+                res.append(modrm(mod=0b10, rm=self.base.num, reg=reg))
+
+        #
+        # [disp]
+        #
+        elif self.only_disp():
+            res.append(modrm(mod=0b00, rm=0b101, reg=reg))
+
+        #
+        # [base + index*scale]
+        # [base + index*scale + disp]
+        #
+        else:
+            if self.disp is None:
+                mod = 0b00
+            elif small_disp:
+                mod = 0b01
+            else:
+                mod = 0b10
+
+            res.append(modrm(mod, 0b100, reg))
+            res.append(sib(scale, index, self.base.num))
+
+        if self.disp is not None:
+            if small_disp:
+                res.extend(struct.pack('<B', self.disp & 0xff))
+            else:
+                res.extend(struct.pack('<I', self.disp & 0xffffffff))
+
+        return res
+
+    def __add__(self, other):
+        res = copy.copy(self)
+
+        if isinstance(other, int):
+            assert res.disp is None
+            res.disp = other
+            return res
+
+        if isinstance(other, R32):
+            assert res.base is None
+            res.base = other
+            return res
+
+        if isinstance(other, EffectiveAddress):
+            if other.base:
+                # TODO: could add other*1 as index and scale if we already have a base
+                # right now [EBX + EBX] won't work, but [EBX + EBX*1] will
+                assert res.base is None
+                res.base = other.base
+
+            if other.index and other.scale:
+                assert res.index is None and res.scale is None
+                res.index = other.index
+                res.scale = other.scale
+
+            if other.disp is not None:
+                assert res.disp is None
+                res.disp = other.disp
+
+            return res
+
+        print(self, other)
+        raise Exception('oops')
+
+AL = R8('al', 0)
+CL = R8('cl', 1)
+DL = R8('dl', 2)
+BL = R8('bl', 3)
+AH = R8('ah', 4)
+CH = R8('ch', 5)
+DH = R8('dh', 6)
+BH = R8('bh', 7)
+
+AX = R16('ax', 0)
+CX = R16('cx', 1)
+DX = R16('dx', 2)
+BX = R16('bx', 3)
+SP = R16('sp', 4)
+BP = R16('bp', 5)
+SI = R16('si', 6)
+DI = R16('di', 7)
+
+EAX = R32('eax', 0)
+ECX = R32('ecx', 1)
+EDX = R32('edx', 2)
+EBX = R32('ebx', 3)
+ESP = R32('esp', 4)
+EBP = R32('ebp', 5)
+ESI = R32('esi', 6)
+EDI = R32('edi', 7)
+
+XMM0 = XMM('xmm0', 0)
+XMM1 = XMM('xmm1', 1)
+XMM2 = XMM('xmm2', 2)
+XMM3 = XMM('xmm3', 3)
+XMM4 = XMM('xmm4', 4)
+XMM5 = XMM('xmm5', 5)
+XMM6 = XMM('xmm6', 6)
+XMM7 = XMM('xmm7', 7)
 
 class LabelUse:
     def __init__(self, address, relative_to=0):
@@ -56,6 +258,12 @@ class Label:
 
     def bind(self):
         self.address = self.asm.current_address()
+
+def accept_lists_as_addresses(f):
+    def wrap(*args):
+        args = [EffectiveAddress.from_list(arg) if isinstance(arg, list) else arg for arg in args]
+        f(*args)
+    return wrap
 
 class Assembler:
     def __init__(self, base=0):
@@ -78,7 +286,7 @@ class Assembler:
         for label in self.labels:
             address = label.address
             if address is None:
-                print('warning: unbound label')
+                sys.stderr.write('warning: unbound label')
                 address = dummy_address
             for use in label.uses:
                 struct.pack_into('<I', self.code, use.address - self.base, (address - use.relative_to) & 0xffffffff)
@@ -96,223 +304,342 @@ class Assembler:
     def nop(self):
         self.emit([0x90])
 
-    def bp(self):
+    def int3(self):
         self.emit([0xcc])
-    
-    def arg(self, offset, reg):
-        modrm = 0b10000000 | ((reg & 7) << 3) | (0b100)
-        sib = 0b00100000 | ESP
-        self.emit([0x89, modrm, sib])
-        self.emit32(offset)
 
-    def call(self, label):
-        self.emit([0xe8])
-        label.uses.append(LabelUse(self.current_address(), relative_to=self.current_address() + 4))
-        self.emit32(0)
+    @accept_lists_as_addresses
+    def call(self, target):
+        if isinstance(target, Label):
+            self.emit([0xe8])
+            target.uses.append(LabelUse(self.current_address(), relative_to=self.current_address() + 4))
+            self.emit32(0)
 
-    def call_reg(self, reg):
-        modrm = 0b11000000 | (2 << 3) | (reg & 7)
-        self.emit([0xff, modrm])
+        elif isinstance(target, Rm32):
+            self.emit([0xff])
+            self.emit(target.modrm_bytes(reg=2))
+
+        else:
+            raise Exception('unsupported operands to call')
 
     def ret(self):
         self.emit([0xc3])
 
-    def jmp(self, label):
-        self.emit([0xe9])
+    @accept_lists_as_addresses
+    def jmp(self, target):
+        if isinstance(target, Label):
+            self.emit([0xe9])
+            target.uses.append(LabelUse(self.current_address(), relative_to=self.current_address() + 4))
+            self.emit32(0)
+
+        elif isinstance(target, Rm32):
+            self.emit([0xff])
+            self.emit(target.modrm_bytes(reg=4))
+
+        else:
+            raise Exception('unsupported operands to jmp')
+
+    def jcc(self, opcode, label):
+        self.emit(opcode)
         label.uses.append(LabelUse(self.current_address(), relative_to=self.current_address() + 4))
         self.emit32(0)
 
-    def jmp_reg(self, reg):
-        modrm = 0b11000000 | (4 << 3) | (reg & 7)
-        self.emit([0xff, modrm])
+    def je(self, label):
+        self.jcc([0x0f, 0x84], label)
 
-    def cmp(self, reg1, reg2):
-        modrm = 0b11000000 | ((reg2 & 7) << 3) | (reg1 & 7)
-        self.emit([0x39, modrm])
+    def jne(self, label):
+        self.jcc([0x0f, 0x85], label)
 
-    def jmp_cond(self, cond, label):
-        self.emit({
-            COND_EQ:  [0x0f, 0x84],
-            COND_NE:  [0x0f, 0x85],
-            COND_LTI: [0x0f, 0x8c],
-            COND_LEI: [0x0f, 0x8e],
-            COND_GTI: [0x0f, 0x8f],
-            COND_GEI: [0x0f, 0x8d],
-            COND_LTU: [0x0f, 0x82],
-            COND_LEU: [0x0f, 0x86],
-            COND_GTU: [0x0f, 0x87],
-            COND_GEU: [0x0f, 0x83],
-        }[cond])
-        label.uses.append(LabelUse(self.current_address(), relative_to=self.current_address() + 4))
-        self.emit32(0)
+    def jl(self, label):
+        self.jcc([0x0f, 0x8c], label)
 
-    def mov(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
-        self.emit([0x89, modrm])
+    def jle(self, label):
+        self.jcc([0x0f, 0x8e], label)
 
-    def load_const(self, reg, value):
-        self.emit([0xb8 + reg])
-        self.emit32(value)
+    def jg(self, label):
+        self.jcc([0x0f, 0x8f], label)
 
-    def load_label(self, reg, label):
-        self.emit([0xb8 + reg])
-        label.uses.append(LabelUse(self.current_address()))
-        self.emit32(0)
+    def jge(self, label):
+        self.jcc([0x0f, 0x8d], label)
 
-    def load(self, dest_reg, src_reg, size=32):
-        modrm = ((dest_reg & 7) << 3) | (src_reg & 7)
-        if size == 32:
-            self.emit([0x8b, modrm])
-        elif size == 16:
-            self.emit([0x66, 0x8b, modrm])
-        elif size == 8:
-            self.emit([0x8a, modrm])
+    def jb(self, label):
+        self.jcc([0x0f, 0x82], label)
+
+    def jbe(self, label):
+        self.jcc([0x0f, 0x86], label)
+
+    def ja(self, label):
+        self.jcc([0x0f, 0x87], label)
+
+    def jae(self, label):
+        self.jcc([0x0f, 0x83], label)
+
+    @accept_lists_as_addresses
+    def cmp(self, dest, src):
+        if isinstance(dest, Rm32) and isinstance(src, R32):
+            self.emit([0x39])
+            self.emit(dest.modrm_bytes(reg=src.num))
         else:
-            raise Exception('invalid memory reference size')
+            raise Exception(f'unsupported operands to cmp')
 
-    def store(self, dest_reg, src_reg, size=32):
-        modrm = ((src_reg & 7) << 3) | (dest_reg & 7)
-        if size == 32:
-            self.emit([0x89, modrm])
-        elif size == 16:
-            self.emit([0x66, 0x89, modrm])
-        elif size == 8:
-            self.emit([0x88, modrm])
+    @accept_lists_as_addresses
+    def lea(self, dest, src):
+        if isinstance(dest, R32) and isinstance(src, EffectiveAddress):
+            self.emit([0x8d])
+            self.emit(src.modrm_bytes(reg=dest.num))
         else:
-            raise Exception('invalid memory reference size')
+            raise Exception('unsupported operands to lea')
 
-    def local(self, dest_reg, offset):
-        modrm = 0b10000000 | ((dest_reg & 7) << 3) | EBP
-        self.emit([0x8d, modrm])
-        self.emit32(offset)
+    @accept_lists_as_addresses
+    def mov(self, dest, src):
+        if isinstance(dest, R32) and isinstance(src, int):
+            self.emit([0xb8 + dest.num])
+            self.emit32(src)
 
-    def add(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
-        self.emit([0x03, modrm])
+        elif isinstance(dest, R32) and isinstance(src, Label):
+            self.emit([0xb8 + dest.num])
+            src.uses.append(LabelUse(self.current_address()))
+            self.emit32(0)
 
-    def band(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
-        self.emit([0x21, modrm])
+        elif isinstance(dest, Rm32) and isinstance(src, int):
+            self.emit([0xc7])
+            self.emit(dest.modrm_bytes(reg=0))
+            self.emit32(src)
 
-    def bor(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
-        self.emit([0x09, modrm])
+        elif isinstance(dest, Rm32) and isinstance(src, R32):
+            self.emit([0x89])
+            self.emit(dest.modrm_bytes(reg=src.num))
 
-    def bxor(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
-        self.emit([0x31, modrm])
+        elif isinstance(dest, R32) and isinstance(src, Rm32):
+            self.emit([0x8b])
+            self.emit(src.modrm_bytes(reg=dest.num))
+
+        elif isinstance(dest, R8) and isinstance(src, EffectiveAddress):
+            self.emit([0x8a])
+            self.emit(src.modrm_bytes(reg=dest.num))
+
+        elif isinstance(dest, EffectiveAddress) and isinstance(src, R8):
+            self.emit([0x88])
+            self.emit(dest.modrm_bytes(reg=src.num))
+
+        elif isinstance(dest, R16) and isinstance(src, EffectiveAddress):
+            self.emit([0x66, 0x8b])
+            self.emit(src.modrm_bytes(reg=dest.num))
+
+        elif isinstance(dest, EffectiveAddress) and isinstance(src, R16):
+            self.emit([0x66, 0x89])
+            self.emit(dest.modrm_bytes(reg=src.num))
+
+        else:
+            raise Exception('unsupported operands to mov')
+
+    @accept_lists_as_addresses
+    def add(self, dest, src):
+        if isinstance(dest, Rm32) and isinstance(src, R32):
+            self.emit([0x01])
+            self.emit(dest.modrm_bytes(reg=src.num))
+        else:
+            raise Exception(f'unsupported operands to add')
+
+    # TODO use capital instruction names so we don't have to add a b in front of these?
+
+    @accept_lists_as_addresses
+    def band(self, dest, src):
+        if isinstance(dest, Rm32) and isinstance(src, R32):
+            self.emit([0x21])
+            self.emit(dest.modrm_bytes(reg=src.num))
+        else:
+            raise Exception(f'unsupported operands to and')
+
+    @accept_lists_as_addresses
+    def bor(self, dest, src):
+        if isinstance(dest, Rm32) and isinstance(src, R32):
+            self.emit([0x09])
+            self.emit(dest.modrm_bytes(reg=src.num))
+        else:
+            raise Exception(f'unsupported operands to or')
+
+    @accept_lists_as_addresses
+    def bxor(self, dest, src):
+        if isinstance(dest, Rm32) and isinstance(src, R32):
+            self.emit([0x31])
+            self.emit(dest.modrm_bytes(reg=src.num))
+        else:
+            raise Exception(f'unsupported operands to xor')
 
     def bnot(self, reg):
-        modrm = 0b11000000 | (2 << 3) | (reg & 7)
-        self.emit([0xf7, modrm])
+        self.emit([0xf7, modrm(0b11, reg.num, 2)])
 
     def neg(self, reg):
-        modrm = 0b11000000 | (3 << 3) | (reg & 7)
-        self.emit([0xf7, modrm])
+        self.emit([0xf7, modrm(0b11, reg.num, 3)])
 
-    def sub(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
-        self.emit([0x29, modrm])
+    @accept_lists_as_addresses
+    def sub(self, dest, src):
+        if isinstance(dest, Rm32) and isinstance(src, R32):
+            self.emit([0x29])
+            self.emit(dest.modrm_bytes(reg=src.num))
 
-    def sub_imm(self, dest_reg, value):
-        modrm = 0b11000000 | (5 << 3) | (dest_reg & 7)
-        self.emit([0x81, modrm])
-        self.emit32(value)
+        elif isinstance(dest, Rm32) and isinstance(src, int):
+            self.emit([0x81])
+            self.emit(dest.modrm_bytes(reg=5))
+            self.emit32(src)
 
-    def imul(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
-        self.emit([0x0f, 0xaf, modrm])
-
-    def idiv(self, reg):
-        modrm = 0b11000000 | (7 << 3) | (reg & 7)
-        self.emit([0xf7, modrm])
-
-    def shl(self, dest_reg, shift):
-        modrm = 0b11000000 | (4 << 3) | (dest_reg & 7)
-        self.emit([0xc1, modrm, shift])
-
-    def shl_cl(self, dest_reg):
-        modrm = 0b11000000 | (4 << 3) | (dest_reg & 7)
-        self.emit([0xd3, modrm])
-
-    def shr_cl(self, dest_reg):
-        modrm = 0b11000000 | (5 << 3) | (dest_reg & 7)
-        self.emit([0xd3, modrm])
-
-    def sar_cl(self, dest_reg):
-        modrm = 0b11000000 | (7 << 3) | (dest_reg & 7)
-        self.emit([0xd3, modrm])
-
-    def sext(self, reg, size):
-        modrm = 0b11000000 | ((reg & 7) << 3) | (reg & 7)
-        if size == 8:
-            self.emit([0x0f, 0xbe, modrm])
-        elif size == 16:
-            self.emit([0x0f, 0xbf, modrm])
         else:
-            raise Exception('invalid sign extention size')
+            raise Exception('unsupported operands to sub')
 
-    def push(self, reg):
-        self.emit([0x50 + reg])
+    @accept_lists_as_addresses
+    def imul(self, dest, src):
+        if isinstance(dest, R32) and isinstance(src, Rm32):
+            self.emit([0x0f, 0xaf])
+            self.emit(src.modrm_bytes(reg=dest.num))
+        else:
+            raise Exception('unsupported operands to imul')
 
-    def pop(self, reg):
-        self.emit([0x58 + reg])
+    @accept_lists_as_addresses
+    def idiv(self, reg):
+        if isinstance(reg, Rm32):
+            self.emit([0xf7])
+            self.emit(reg.modrm_bytes(reg=7))
+        else:
+            raise Exception('unsupported operands to idiv')
 
-    def rep_stosb(self):
-        self.emit([0xf3, 0xaa])
+    @accept_lists_as_addresses
+    def shl(self, dest, shift):
+        if isinstance(dest, Rm32) and isinstance(shift, int):
+            self.emit([0xc1])
+            self.emit(dest.modrm_bytes(reg=4))
+            self.emit([shift & 0xff])
+
+        elif isinstance(dest, Rm32) and shift is CL:
+            self.emit([0xd3])
+            self.emit(dest.modrm_bytes(reg=4))
+
+        else:
+            raise Exception('unsupported operands to shl')
+
+    @accept_lists_as_addresses
+    def shr(self, dest, shift):
+        if isinstance(dest, Rm32) and shift is CL:
+            self.emit([0xd3])
+            self.emit(dest.modrm_bytes(reg=5))
+        else:
+            raise Exception('unsupported operands to shr')
+
+    @accept_lists_as_addresses
+    def sar(self, dest, shift):
+        if isinstance(dest, Rm32) and shift is CL:
+            self.emit([0xd3])
+            self.emit(dest.modrm_bytes(reg=7))
+        else:
+            raise Exception('unsupported operands to sar')
+
+    def movsx(self, dest, src):
+        if isinstance(dest, R32) and isinstance(src, R8):
+            self.emit([0x0f, 0xbe, modrm(0b11, src.num, dest.num)])
+
+        elif isinstance(dest, R32) and isinstance(src, R16):
+            self.emit([0x0f, 0xbf, modrm(0b11, src.num, dest.num)])
+
+        else:
+            raise Exception('unsupported operands to movsx')
+
+    def movzx(self, dest, src):
+        if isinstance(dest, R32) and isinstance(src, R8):
+            self.emit([0x0f, 0xb6, modrm(0b11, src.num, dest.num)])
+
+        elif isinstance(dest, R32) and isinstance(src, R16):
+            self.emit([0x0f, 0xb7, modrm(0b11, src.num, dest.num)])
+
+        else:
+            raise Exception('unsupported operands to movsx')
+
+    @accept_lists_as_addresses
+    def push(self, operand):
+        if isinstance(operand, int):
+            self.emit([0x68])
+            self.emit32(operand)
+
+        elif isinstance(operand, R32):
+            self.emit([0x50 + operand.num])
+
+        elif isinstance(operand, Rm32):
+            self.emit([0xff])
+            self.emit(operand.modrm_bytes(reg=6))
+
+        else:
+            raise Exception('unsupported operands to push')
+
+    @accept_lists_as_addresses
+    def pop(self, operand):
+        if isinstance(operand, R32):
+            self.emit([0x58 + operand.num])
+
+        elif isinstance(operand, Rm32):
+            self.emit([0x8f])
+            self.emit(operand.modrm_bytes(reg=0))
+
+        else:
+            raise Exception('unsupported operands to pop')
+
+    def rep_movsb(self):
+        self.emit([0xf3, 0xa4])
 
     def cdq(self):
         self.emit([0x99])
 
-    def movd(self, dest_reg, src_reg):
-        if dest_reg >= XMM0 and src_reg < XMM0:
-            modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
-            self.emit([0x66, 0x0f, 0x6e, modrm])
-        elif dest_reg < XMM0 and src_reg >= XMM0:
-            modrm = 0b11000000 | ((src_reg & 7) << 3) | (dest_reg & 7)
-            self.emit([0x66, 0x0f, 0x7e, modrm])
+    @accept_lists_as_addresses
+    def movd(self, dest, src):
+        if isinstance(dest, XMM) and isinstance(src, Rm32):
+            self.emit([0x66, 0x0f, 0x6e])
+            self.emit(src.modrm_bytes(reg=dest.num))
+
+        elif isinstance(dest, Rm32) and isinstance(src, XMM):
+            self.emit([0x66, 0x0f, 0x7e])
+            self.emit(dest.modrm_bytes(reg=src.num))
+
         else:
-            raise Exception('invalid movd arguments')
+            raise Exception('unsupported operands to movd')
 
-    def addss(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
-        self.emit([0xf3, 0x0f, 0x58, modrm])
+    def addss(self, dest, src):
+        if isinstance(dest, XMM) and isinstance(src, XMM):
+            self.emit([0xf3, 0x0f, 0x58, modrm(0b11, src.num, dest.num)])
+        else:
+            raise Exception('unsupported operands to addss')
 
-    def subss(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
-        self.emit([0xf3, 0x0f, 0x5c, modrm])
+    def subss(self, dest, src):
+        if isinstance(dest, XMM) and isinstance(src, XMM):
+            self.emit([0xf3, 0x0f, 0x5c, modrm(0b11, src.num, dest.num)])
+        else:
+            raise Exception('unsupported operands to subss')
 
-    def mulss(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
-        self.emit([0xf3, 0x0f, 0x59, modrm])
+    def mulss(self, dest, src):
+        if isinstance(dest, XMM) and isinstance(src, XMM):
+            self.emit([0xf3, 0x0f, 0x59, modrm(0b11, src.num, dest.num)])
+        else:
+            raise Exception('unsupported operands to mulss')
 
-    def divss(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
-        self.emit([0xf3, 0x0f, 0x5e, modrm])
+    def divss(self, dest, src):
+        if isinstance(dest, XMM) and isinstance(src, XMM):
+            self.emit([0xf3, 0x0f, 0x5e, modrm(0b11, src.num, dest.num)])
+        else:
+            raise Exception('unsupported operands to divss')
 
-    def cvtsi2ss(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
-        self.emit([0xf3, 0x0f, 0x2a, modrm])
+    def cvtsi2ss(self, dest, src):
+        if isinstance(dest, XMM) and isinstance(src, R32):
+            self.emit([0xf3, 0x0f, 0x2a, modrm(0b11, src.num, dest.num)])
+        else:
+            raise Exception('unsupported operands to cvtsi2ss')
 
-    def cvttss2si(self, dest_reg, src_reg):
-        modrm = 0b11000000 | ((dest_reg & 7) << 3) | (src_reg & 7)
-        self.emit([0xf3, 0x0f, 0x2c, modrm])
+    def cvttss2si(self, dest, src):
+        if isinstance(dest, R32) and isinstance(src, XMM):
+            self.emit([0xf3, 0x0f, 0x2c, modrm(0b11, src.num, dest.num)])
+        else:
+            raise Exception('unsupported operands to cvttss2si')
 
-    def ucomiss(self, reg1, reg2):
-        modrm = 0b11000000 | ((reg1 & 7) << 3) | (reg2 & 7)
-        self.emit([0x0f, 0x2e, modrm])
+    def ucomiss(self, dest, src):
+        if isinstance(dest, XMM) and isinstance(src, XMM):
+            self.emit([0x0f, 0x2e, modrm(0b11, src.num, dest.num)])
+        else:
+            raise Exception('unsupported operands to ucomiss')
 
     def syscall(self):
         self.emit([0x0f, 0x05])
-
-def main():
-    asm = Assembler()
-
-    asm.movd(XMM1, EAX)
-    asm.movd(EAX, XMM2)
-
-    asm.fixup_labels()
-    print(binascii.hexlify(asm.code))
-
-if __name__ == '__main__':
-    main()

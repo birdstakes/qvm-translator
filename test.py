@@ -70,8 +70,6 @@ class CodeGenerator:
         self.instruction_addresses = []
         self.instruction_addresses_label = self.asm.label()
 
-        self.invert_conditions = False
-
     def generate(self, sub):
         # reset register use for every sub
         self.regs = RegAllocator(self.spill, self.unspill, [EBX, ECX, EDX, ESI, EDI])
@@ -116,7 +114,7 @@ class CodeGenerator:
             if offset >= 0x80000000:
                 assert label.address is None
                 label.bind()
-                self.asm.load_const(EAX, offset)
+                self.asm.mov(EAX, offset)
                 self.asm.syscall()
                 self.asm.ret()
 
@@ -138,18 +136,17 @@ class CodeGenerator:
         for child in node.children:
             self.set_instruction_addresses(child)
 
+    def spill_offset(self, reg):
+        return self.frame_size + 4 + reg.offset * 4
+
     def spill(self, reg):
         if reg.offset >= self.num_spills:
             self.num_spills = reg.offset + 1
 
-        # TODO add `mov [ebp+imm], reg` to assembler?
-        self.asm.local(EAX, -(self.frame_size + 4 + reg.offset * 4))
-        self.asm.store(EAX, reg.get())
+        self.asm.mov([EBP - self.spill_offset(reg)], reg.get())
 
     def unspill(self, reg):
-        # TODO add `mov reg, [ebp+imm]` to assembler?
-        self.asm.local(EAX, -(self.frame_size + 4 + reg.offset * 4))
-        self.asm.load(reg.get(), EAX)
+        self.asm.mov(reg.get(), [EBP - self.spill_offset(reg)])
 
     def visit(self, node):
         method = 'visit_' + mnemonics[node.opcode]
@@ -164,7 +161,7 @@ class CodeGenerator:
         self.asm.push(EBP)
         self.asm.mov(EBP, ESP)
         self.frame_size_fixup = self.asm.current_address() + 2
-        self.asm.sub_imm(ESP, node.value) 
+        self.asm.sub(ESP, node.value)
 
     def visit_LEAVE(self, node):
         assert len(node.children) <= 1
@@ -178,22 +175,31 @@ class CodeGenerator:
 
     def visit_PUSH(self, node):
         reg = self.regs.new()
-        self.asm.load_const(reg.get(), 0)
+        self.asm.mov(reg.get(), 0)
         return reg
 
     def visit_CONST(self, node):
         reg = self.regs.new()
-        self.asm.load_const(reg.get(), node.value)
+        self.asm.mov(reg.get(), node.value)
         return reg
 
     def visit_LOCAL(self, node):
         reg = self.regs.new()
-        self.asm.local(reg.get(), node.value - self.frame_size)
+        self.asm.lea(reg.get(), [EBP + (node.value - self.frame_size)])
         return reg
 
     def do_load(self, node, size):
         reg = self.visit(node.child)
-        self.asm.load(reg.get(), reg.get(), size=size)
+
+        if size == 32:
+            self.asm.mov(reg.get(), [reg.get()])
+        elif size == 16:
+            self.asm.mov(AX, [reg.get()])
+            self.asm.movzx(reg.get(), AX)
+        elif size == 8:
+            self.asm.mov(AL, [reg.get()])
+            self.asm.movzx(reg.get(), AL)
+
         return reg
 
     def visit_LOAD1(self, node):
@@ -208,7 +214,16 @@ class CodeGenerator:
     def do_store(self, node, size):
         src = self.visit(node.right)
         dest = self.visit(node.left)
-        self.asm.store(dest.get(), src.get(), size=size)
+
+        if size == 32:
+            self.asm.mov([dest.get()], src.get())
+        elif size == 16:
+            self.asm.mov(EAX, src.get())
+            self.asm.mov([dest.get()], AX)
+        elif size == 8:
+            self.asm.mov(EAX, src.get())
+            self.asm.mov([dest.get()], AL)
+
         src.free()
         dest.free()
 
@@ -242,7 +257,7 @@ class CodeGenerator:
         self.asm.mov(EAX, dest.get()) # switch to EAX because we might be trying to shift ECX
         self.asm.push(ECX)
         self.asm.mov(ECX, shift.get())
-        shift_func(EAX)
+        shift_func(EAX, CL)
         self.asm.pop(ECX)
         self.asm.mov(dest.get(), EAX)
 
@@ -250,13 +265,13 @@ class CodeGenerator:
         return dest
 
     def visit_LSH(self, node):
-        return self.do_shift(node, self.asm.shl_cl)
+        return self.do_shift(node, self.asm.shl)
 
     def visit_RSHI(self, node):
-        return self.do_shift(node, self.asm.sar_cl)
+        return self.do_shift(node, self.asm.sar)
 
     def visit_RSHU(self, node):
-        return self.do_shift(node, self.asm.shr_cl)
+        return self.do_shift(node, self.asm.shr)
 
     def visit_MULI(self, node):
         dest = self.visit(node.left)
@@ -323,25 +338,27 @@ class CodeGenerator:
 
     def visit_SEX8(self, node):
         reg = self.visit(node.child)
-        self.asm.sext(reg.get(), 8)
+        self.asm.mov(EAX, reg.get())
+        self.asm.movsx(reg.get(), AL)
         return reg
 
     def visit_SEX16(self, node):
         reg = self.visit(node.child)
-        self.asm.sext(reg.get(), 16)
+        self.asm.mov(EAX, reg.get())
+        self.asm.movsx(reg.get(), AX)
         return reg
 
     def visit_ARG(self, node):
         self.arg_size = max(self.arg_size, node.value - 4)
         reg = self.visit(node.child)
-        self.asm.arg(node.value - 8, reg.get())
+        self.asm.mov([ESP + (node.value - 8)], reg.get())
         reg.free()
 
     def instruction_number_to_address(self, reg):
         self.asm.shl(reg.get(), 2)
-        self.asm.load_label(EAX, self.instruction_addresses_label)
+        self.asm.mov(EAX, self.instruction_addresses_label)
         self.asm.add(reg.get(), EAX)
-        self.asm.load(reg.get(), reg.get())
+        self.asm.mov(reg.get(), [reg.get()])
 
     def visit_CALL(self, node):
         if node.child.opcode == CONST:
@@ -354,7 +371,7 @@ class CodeGenerator:
         else:
             reg = self.visit(node.child)
             self.instruction_number_to_address(reg)
-            self.asm.call_reg(reg.get())
+            self.asm.call(reg.get())
         self.asm.mov(reg.get(), EAX)
         return reg
 
@@ -365,87 +382,79 @@ class CodeGenerator:
         else:
             reg = self.visit(node.child)
             self.instruction_number_to_address(reg)
-            self.asm.jmp_reg(reg.get())
+            self.asm.jmp(reg.get())
             reg.free()
 
-    def do_conditional_jump(self, node, cond):
+    def do_conditional_jump(self, node, jump_func):
         left = self.visit(node.left)
         right = self.visit(node.right)
         self.asm.cmp(left.get(), right.get())
-        if self.invert_conditions:
-            self.asm.jmp_cond(cond_inverses[cond], self.successor_labels[0])
-            self.asm.jmp(self.successor_labels[1])
-        else:
-            self.asm.jmp_cond(cond, self.successor_labels[1])
-            self.asm.jmp(self.successor_labels[0])
+        jump_func(self.successor_labels[1])
+        self.asm.jmp(self.successor_labels[0])
         left.free()
         right.free()
 
     def visit_EQ(self, node):
-        self.do_conditional_jump(node, COND_EQ)
+        self.do_conditional_jump(node, self.asm.je)
 
     def visit_NE(self, node):
-        self.do_conditional_jump(node, COND_NE)
+        self.do_conditional_jump(node, self.asm.jne)
 
     def visit_LTI(self, node):
-        self.do_conditional_jump(node, COND_LTI)
+        self.do_conditional_jump(node, self.asm.jl)
 
     def visit_LEI(self, node):
-        self.do_conditional_jump(node, COND_LEI)
+        self.do_conditional_jump(node, self.asm.jle)
 
     def visit_GTI(self, node):
-        self.do_conditional_jump(node, COND_GTI)
+        self.do_conditional_jump(node, self.asm.jg)
 
     def visit_GEI(self, node):
-        self.do_conditional_jump(node, COND_GEI)
+        self.do_conditional_jump(node, self.asm.jge)
 
     def visit_LTU(self, node):
-        self.do_conditional_jump(node, COND_LTU)
+        self.do_conditional_jump(node, self.asm.jb)
 
     def visit_LEU(self, node):
-        self.do_conditional_jump(node, COND_LEU)
+        self.do_conditional_jump(node, self.asm.jbe)
 
     def visit_GTU(self, node):
-        self.do_conditional_jump(node, COND_GTU)
+        self.do_conditional_jump(node, self.asm.ja)
 
     def visit_GEU(self, node):
-        self.do_conditional_jump(node, COND_GEU)
+        self.do_conditional_jump(node, self.asm.jae)
 
     # TODO: check these
     # EQ and NE need to check for parity flag too?
     # are the rest ok?
-    def do_conditional_jump_float(self, node, cond):
+    def do_conditional_jump_float(self, node, jump_func):
         left = self.visit(node.left)
         right = self.visit(node.right)
         self.asm.movd(XMM0, left.get())
         self.asm.movd(XMM1, right.get())
         self.asm.ucomiss(XMM0, XMM1)
-        if self.invert_conditions:
-            self.asm.jmp_cond(cond_inverses[cond], self.successor_labels[0])
-            self.asm.jmp(self.successor_labels[1])
-        else:
-            self.asm.jmp_cond(cond, self.successor_labels[1])
-            self.asm.jmp(self.successor_labels[0])
+        jump_func(self.successor_labels[1])
+        self.asm.jmp(self.successor_labels[0])
         left.free()
         right.free()
 
     def visit_EQF(self, node):
-        self.do_conditional_jump_float(node, COND_EQ)
+        self.do_conditional_jump_float(node, self.asm.je)
 
     def visit_NEF(self, node):
-        self.do_conditional_jump_float(node, COND_NE)
+        self.do_conditional_jump_float(node, self.asm.jne)
 
     def visit_LTF(self, node):
-        self.do_conditional_jump_float(node, COND_LTU)
+        self.do_conditional_jump_float(node, self.asm.jb)
 
     def visit_LEF(self, node):
-        self.do_conditional_jump_float(node, COND_LEU)
+        self.do_conditional_jump_float(node, self.asm.jbe)
 
     def visit_GTF(self, node):
-        self.do_conditional_jump_float(node, COND_GTU)
+        self.do_conditional_jump_float(node, self.asm.ja)
 
     def visit_GEF(self, node):
-        self.do_conditional_jump_float(node, COND_GEU)
+        self.do_conditional_jump_float(node, self.asm.jae)
 
     def visit_ADDF(self, node):
         dest = self.visit(node.left)
@@ -489,7 +498,7 @@ class CodeGenerator:
 
     def visit_NEGF(self, node):
         reg = self.visit(node.child)
-        self.asm.load_const(EAX, 0x80000000)
+        self.asm.mov(EAX, 0x80000000)
         self.asm.bxor(reg.get(), EAX)
         return reg
 
@@ -516,8 +525,8 @@ class CodeGenerator:
 
         self.asm.mov(EDI, dest.get())
         self.asm.mov(ESI, src.get())
-        self.asm.load_const(ECX, size)
-        self.asm.rep_stosb()
+        self.asm.mov(ECX, size)
+        self.asm.rep_movsb()
 
         self.asm.pop(ECX)
         self.asm.pop(ESI)
