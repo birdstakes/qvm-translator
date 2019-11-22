@@ -282,30 +282,38 @@ class CodeGenerator:
         src.free()
         return dest
 
-    def visit_DIVI(self, node):
+    def do_divmod(self, node, mod=False):
         dest = self.visit(node.left)
         src = self.visit(node.right)
+
+        # make sure registers are loaded ahead of time so spilling doesn't interfere with anything
+        dest_reg = dest.get()
+        src_reg = src.get()
+
+        # EDX is used by idiv
+        # EBX is used for src in case it was EDX
+        self.asm.push(EBX)
         self.asm.push(EDX)
-        self.asm.mov(EAX, dest.get())
+
+        self.asm.mov(EAX, dest_reg)
+        self.asm.mov(EBX, src_reg)
         self.asm.cdq()
-        self.asm.idiv(src.get())
+        self.asm.idiv(EBX)
+        if mod:
+            self.asm.mov(EAX, EDX)
+
         self.asm.pop(EDX)
-        self.asm.mov(dest.get(), EAX)
+        self.asm.pop(EBX)
+
+        self.asm.mov(dest_reg, EAX)
         src.free()
         return dest
 
+    def visit_DIVI(self, node):
+        return self.do_divmod(node)
+
     def visit_MODI(self, node):
-        dest = self.visit(node.left)
-        src = self.visit(node.right)
-        self.asm.push(EDX)
-        self.asm.mov(EAX, dest.get())
-        self.asm.cdq()
-        self.asm.idiv(src.get())
-        self.asm.mov(EAX, EDX)
-        self.asm.pop(EDX)
-        self.asm.mov(dest.get(), EAX)
-        src.free()
-        return dest
+        return self.do_divmod(node, mod=True)
 
     def visit_NEGI(self, node):
         reg = self.visit(node.child)
