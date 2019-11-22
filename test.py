@@ -62,13 +62,15 @@ class BasicBlock:
         return basic_blocks
 
 class CodeGenerator:
-    def __init__(self):
+    def __init__(self, use_sse=True):
         self.asm = Assembler(base=0x10000000)
         self.sub_labels = {} # for CONST calls
 
         # for indirect jumps and calls
         self.instruction_addresses = []
         self.instruction_addresses_label = self.asm.label()
+
+        self.use_sse = use_sse
 
     def generate(self, sub):
         # reset register use for every sub
@@ -430,9 +432,18 @@ class CodeGenerator:
     def do_conditional_jump_float(self, node, jump_func):
         left = self.visit(node.left)
         right = self.visit(node.right)
-        self.asm.movd(XMM0, left.get())
-        self.asm.movd(XMM1, right.get())
-        self.asm.ucomiss(XMM0, XMM1)
+        if self.use_sse:
+            self.asm.movd(XMM0, left.get())
+            self.asm.movd(XMM1, right.get())
+            self.asm.ucomiss(XMM0, XMM1)
+        else:
+            self.asm.push(right.get())
+            self.asm.fld([ESP])
+            self.asm.mov([ESP], left.get())
+            self.asm.fld([ESP])
+            self.asm.fcomip(1)
+            self.asm.fstp(0)
+            self.asm.pop(left.get()) # add esp, 4 would change flags. should we even push in the first place?
         jump_func(self.successor_labels[1])
         self.asm.jmp(self.successor_labels[0])
         left.free()
@@ -456,45 +467,52 @@ class CodeGenerator:
     def visit_GEF(self, node):
         self.do_conditional_jump_float(node, self.asm.jae)
 
-    def visit_ADDF(self, node):
+    def do_sse_bin_op(self, node, op_func):
         dest = self.visit(node.left)
         src = self.visit(node.right)
         self.asm.movd(XMM0, dest.get())
         self.asm.movd(XMM1, src.get())
-        self.asm.addss(XMM0, XMM1)
+        op_func(XMM0, XMM1)
         self.asm.movd(dest.get(), XMM0)
         src.free()
         return dest
+
+    def do_x87_bin_op(self, node, op_func):
+        dest = self.visit(node.left)
+        src = self.visit(node.right)
+        self.asm.push(dest.get())
+        self.asm.fld([ESP])
+        self.asm.mov([ESP], src.get())
+        self.asm.fld([ESP])
+        op_func()
+        self.asm.fstp([ESP])
+        self.asm.pop(dest.get())
+        src.free()
+        return dest
+
+    def visit_ADDF(self, node):
+        if self.use_sse:
+            return self.do_sse_bin_op(node, self.asm.addss)
+        else:
+            return self.do_x87_bin_op(node, self.asm.faddp)
 
     def visit_SUBF(self, node):
-        dest = self.visit(node.left)
-        src = self.visit(node.right)
-        self.asm.movd(XMM0, dest.get())
-        self.asm.movd(XMM1, src.get())
-        self.asm.subss(XMM0, XMM1)
-        self.asm.movd(dest.get(), XMM0)
-        src.free()
-        return dest
+        if self.use_sse:
+            return self.do_sse_bin_op(node, self.asm.subss)
+        else:
+            return self.do_x87_bin_op(node, self.asm.fsubp)
 
     def visit_MULF(self, node):
-        dest = self.visit(node.left)
-        src = self.visit(node.right)
-        self.asm.movd(XMM0, dest.get())
-        self.asm.movd(XMM1, src.get())
-        self.asm.mulss(XMM0, XMM1)
-        self.asm.movd(dest.get(), XMM0)
-        src.free()
-        return dest
+        if self.use_sse:
+            return self.do_sse_bin_op(node, self.asm.mulss)
+        else:
+            return self.do_x87_bin_op(node, self.asm.fmulp)
 
     def visit_DIVF(self, node):
-        dest = self.visit(node.left)
-        src = self.visit(node.right)
-        self.asm.movd(XMM0, dest.get())
-        self.asm.movd(XMM1, src.get())
-        self.asm.divss(XMM0, XMM1)
-        self.asm.movd(dest.get(), XMM0)
-        src.free()
-        return dest
+        if self.use_sse:
+            return self.do_sse_bin_op(node, self.asm.divss)
+        else:
+            return self.do_x87_bin_op(node, self.asm.fdivp)
 
     def visit_NEGF(self, node):
         reg = self.visit(node.child)
@@ -504,14 +522,26 @@ class CodeGenerator:
 
     def visit_CVIF(self, node):
         reg = self.visit(node.child)
-        self.asm.cvtsi2ss(XMM0, reg.get())
-        self.asm.movd(reg.get(), XMM0)
+        if self.use_sse:
+            self.asm.cvtsi2ss(XMM0, reg.get())
+            self.asm.movd(reg.get(), XMM0)
+        else:
+            self.asm.push(reg.get())
+            self.asm.fild([ESP])
+            self.asm.fstp([ESP])
+            self.asm.pop(reg.get())
         return reg
 
     def visit_CVFI(self, node):
         reg = self.visit(node.child)
-        self.asm.movd(XMM0, reg.get())
-        self.asm.cvttss2si(reg.get(), XMM0)
+        if self.use_sse:
+            self.asm.movd(XMM0, reg.get())
+            self.asm.cvttss2si(reg.get(), XMM0)
+        else:
+            self.asm.push(reg.get())
+            self.asm.fld([ESP])
+            self.asm.fistp([ESP])
+            self.asm.pop(reg.get())
         return reg
 
     def visit_BLOCK_COPY(self, node):

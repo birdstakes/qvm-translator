@@ -641,5 +641,54 @@ class Assembler:
         else:
             raise Exception('unsupported operands to ucomiss')
 
+    @accept_lists_as_addresses
+    def fld(self, src):
+        if isinstance(src, EffectiveAddress):
+            self.emit([0xd9])
+            self.emit(src.modrm_bytes(reg=0))
+        else:
+            raise Exception('unsupported operands to fld')
+
+    @accept_lists_as_addresses
+    def fild(self, src):
+        if isinstance(src, EffectiveAddress):
+            self.emit([0xdb])
+            self.emit(src.modrm_bytes(reg=0))
+        else:
+            raise Exception('unsupported operands to fild')
+
+    @accept_lists_as_addresses
+    def fstp(self, dest):
+        if isinstance(dest, int):
+            self.emit([0xdd, 0xd8 + dest])
+        elif isinstance(dest, EffectiveAddress):
+            self.emit([0xd9])
+            self.emit(dest.modrm_bytes(reg=3))
+        else:
+            raise Exception('unsupported operands to fstp')
+
+    @accept_lists_as_addresses
+    def fistp(self, dest):
+        if isinstance(dest, EffectiveAddress):
+            self.emit([0xdb])
+            self.emit(dest.modrm_bytes(reg=3))
+        else:
+            raise Exception('unsupported operands to fstp')
+
+    def faddp(self):
+        self.emit([0xde, 0xc1])
+
+    def fsubp(self):
+        self.emit([0xde, 0xe9])
+
+    def fmulp(self):
+        self.emit([0xde, 0xc9])
+
+    def fdivp(self):
+        self.emit([0xde, 0xf9])
+
+    def fcomip(self, i):
+        self.emit([0xdf, 0xf0 + i])
+
     def syscall(self):
         self.emit([0x0f, 0x05])
