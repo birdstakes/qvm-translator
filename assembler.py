@@ -434,7 +434,11 @@ class Assembler:
 
     @accept_lists_as_addresses
     def add(self, dest, src):
-        if isinstance(dest, Rm32) and isinstance(src, R32):
+        if isinstance(dest, Rm32) and isinstance(src, int):
+            self.emit([0x81])
+            self.emit(dest.modrm_bytes(reg=0))
+            self.emit32(src)
+        elif isinstance(dest, Rm32) and isinstance(src, R32):
             self.emit([0x01])
             self.emit(dest.modrm_bytes(reg=src.num))
         else:

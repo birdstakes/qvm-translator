@@ -66,6 +66,9 @@ class CodeGenerator:
         self.asm = Assembler(base=0x10000000)
         self.sub_labels = {} # for CONST calls
 
+        # for BLOCK_COPY instructions
+        self.memcpy_label = self.asm.label()
+
         # for indirect jumps and calls
         self.instruction_addresses = []
         self.instruction_addresses_label = self.asm.label()
@@ -119,6 +122,20 @@ class CodeGenerator:
                 self.asm.mov(EAX, offset)
                 self.asm.syscall()
                 self.asm.ret()
+
+        # generate memcpy function for BLOCK_COPY instructions
+        self.memcpy_label.bind()
+        self.asm.push(EDI)
+        self.asm.push(ESI)
+        self.asm.push(ECX)
+        self.asm.mov(EDI, [ESP + 0x10])
+        self.asm.mov(ESI, [ESP + 0x14])
+        self.asm.mov(ECX, [ESP + 0x18])
+        self.asm.rep_movsb()
+        self.asm.pop(ECX)
+        self.asm.pop(ESI)
+        self.asm.pop(EDI)
+        self.asm.ret()
 
         # generate instruction address table
         self.asm.align(4)
@@ -557,18 +574,11 @@ class CodeGenerator:
         src = self.visit(node.right)
         size = node.value
 
-        self.asm.push(EDI)
-        self.asm.push(ESI)
-        self.asm.push(ECX)
-
-        self.asm.mov(EDI, dest.get())
-        self.asm.mov(ESI, src.get())
-        self.asm.mov(ECX, size)
-        self.asm.rep_movsb()
-
-        self.asm.pop(ECX)
-        self.asm.pop(ESI)
-        self.asm.pop(EDI)
+        self.asm.push(size)
+        self.asm.push(src.get())
+        self.asm.push(dest.get())
+        self.asm.call(self.memcpy_label)
+        self.asm.add(ESP, 12)
 
         dest.free()
         src.free()
@@ -644,6 +654,7 @@ def main():
                     assert label.address is not None
                     f.write(f'{name} {label.address:#x}\n'.encode())
 
+            f.write(f'__memcpy {cg.memcpy_label.address:#x}\n'.encode())
             f.write(f'__instruction_addresses {cg.instruction_addresses_label.address:#x}\n'.encode())
 
     if args.data:
