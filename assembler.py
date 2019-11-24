@@ -280,16 +280,12 @@ class Assembler:
         return label
 
     def fixup_labels(self):
-        dummy_address = self.current_address()
-        self.ret()
-
         for label in self.labels:
-            address = label.address
-            if address is None:
+            if label.address is None:
                 sys.stderr.write('warning: unbound label')
-                address = dummy_address
+                continue
             for use in label.uses:
-                struct.pack_into('<I', self.code, use.address - self.base, (address - use.relative_to) & 0xffffffff)
+                struct.pack_into('<I', self.code, use.address - self.base, (label.address - use.relative_to) & 0xffffffff)
 
     def emit(self, data):
         self.code.extend(data)
