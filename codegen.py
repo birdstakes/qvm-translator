@@ -564,8 +564,11 @@ class CodeGenerator:
 
     def visit_NEGF(self, node):
         reg = self.visit(node.child)
-        self.asm.mov(EAX, 0x80000000)
-        self.asm.bxor(reg.get(), EAX)
+        self.asm.push(reg.get())
+        self.asm.fld([ESP])
+        self.asm.fchs()
+        self.asm.fstp([ESP])
+        self.asm.pop(reg.get())
         return reg
 
     def visit_CVIF(self, node):

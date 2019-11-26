@@ -695,6 +695,9 @@ class Assembler:
     def fdivp(self):
         self.emit([0xde, 0xf9])
 
+    def fchs(self):
+        self.emit([0xd9, 0xe0])
+
     def fcomip(self, i):
         self.emit([0xdf, 0xf0 + i])
 
