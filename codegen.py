@@ -309,7 +309,10 @@ class CodeGenerator:
         src.free()
         return dest
 
-    def do_divmod(self, node, mod=False):
+    def visit_MULU(self, node):
+        return self.visit_MULI(node)
+
+    def do_divmod(self, node, unsigned=False, mod=False):
         dest = self.visit(node.left)
         src = self.visit(node.right)
 
@@ -317,15 +320,19 @@ class CodeGenerator:
         dest_reg = dest.get()
         src_reg = src.get()
 
-        # EDX is used by idiv
+        # EDX is used by div/idiv
         # EBX is used for src in case it was EDX
         self.asm.push(EBX)
         self.asm.push(EDX)
 
         self.asm.mov(EAX, dest_reg)
         self.asm.mov(EBX, src_reg)
-        self.asm.cdq()
-        self.asm.idiv(EBX)
+        if unsigned:
+            self.asm.bxor(EDX, EDX)
+            self.asm.div(EBX)
+        else:
+            self.asm.cdq()
+            self.asm.idiv(EBX)
         if mod:
             self.asm.mov(EAX, EDX)
 
@@ -339,8 +346,14 @@ class CodeGenerator:
     def visit_DIVI(self, node):
         return self.do_divmod(node)
 
+    def visit_DIVU(self, node):
+        return self.do_divmod(node, unsigned=True)
+
     def visit_MODI(self, node):
         return self.do_divmod(node, mod=True)
+
+    def visit_MODU(self, node):
+        return self.do_divmod(node, unsigned=True, mod=True)
 
     def visit_NEGI(self, node):
         reg = self.visit(node.child)

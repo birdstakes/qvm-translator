@@ -503,6 +503,14 @@ class Assembler:
             raise Exception('unsupported operands to idiv')
 
     @accept_lists_as_addresses
+    def div(self, reg):
+        if isinstance(reg, Rm32):
+            self.emit([0xf7])
+            self.emit(reg.modrm_bytes(reg=6))
+        else:
+            raise Exception('unsupported operands to div')
+
+    @accept_lists_as_addresses
     def shl(self, dest, shift):
         if isinstance(dest, Rm32) and isinstance(shift, int):
             self.emit([0xc1])
