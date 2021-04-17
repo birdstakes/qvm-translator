@@ -78,6 +78,7 @@ class CodeGenerator:
     def __init__(self, use_sse=True):
         self.asm = Assembler(base=0x10000000)
         self.sub_labels = {} # for CONST calls
+        self.sub_sizes = {}
 
         # for BLOCK_COPY instructions
         self.memcpy_label = self.asm.label()
@@ -123,6 +124,8 @@ class CodeGenerator:
         # TODO: this is ugly, maybe add another kind of fixup for arbitrary constants?
         struct.pack_into('<I', self.asm.code, self.frame_size_fixup - self.asm.base, frame_size)
 
+        self.sub_sizes[sub_address] = self.asm.current_address() - self.sub_labels[sub_address].address
+
     def finish(self):
         # generate syscall stubs
         for offset, label in self.sub_labels.items():
@@ -132,6 +135,7 @@ class CodeGenerator:
                 self.asm.mov(EAX, offset)
                 self.asm.syscall()
                 self.asm.ret()
+                self.sub_sizes[offset] = self.asm.current_address() - label.address
 
         # generate memcpy function for BLOCK_COPY instructions
         self.memcpy_label.bind()
