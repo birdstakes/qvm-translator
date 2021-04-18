@@ -60,7 +60,7 @@ def main():
         with open(args.code, 'wb') as f:
             f.write(cg.asm.code)
 
-    symbols = []
+    symbols = {}
 
     if args.map:
         with open(args.map, 'rb') as f:
@@ -72,14 +72,14 @@ def main():
                 if type == 0 and address in cg.sub_labels:
                     address = cg.sub_labels[address].address
                     assert address is not None
-                    symbols.append((address, name))
+                    symbols[name] = address
 
-    symbols.append((cg.memcpy_label.address, '__memcpy'))
-    symbols.append((cg.instruction_addresses_label.address, '__instruction_addresses'))
+    symbols['__memcpy'] = cg.memcpy_label.address
+    symbols['__instruction_addresses'] = cg.instruction_addresses_label.address
 
     if args.symbols:
         with open(args.symbols, 'wb') as f:
-            for address, name in symbols:
+            for name, address in symbols.items():
                 f.write(f'{name} {label.address:#x}\n'.encode())
 
     if args.data:
@@ -139,7 +139,7 @@ def main():
         ET.SubElement(program_entry_points, 'PROGRAM_ENTRY_POINT', ADDRESS=f'{cg.asm.base:#X}')
 
         symbol_table = ET.SubElement(program, 'SYMBOL_TABLE')
-        for address, name in symbols:
+        for name, address in symbols.items():
             ET.SubElement(symbol_table, 'SYMBOL', ADDRESS=f'{address:#X}', NAME=name)
 
         functions = ET.SubElement(program, 'FUNCTIONS')
