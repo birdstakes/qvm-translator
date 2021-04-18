@@ -74,6 +74,7 @@ def main():
                     assert address is not None
                     symbols[name] = address
 
+    symbols['vmMain'] = cg.asm.base
     symbols['__memcpy'] = cg.memcpy_label.address
     symbols['__instruction_addresses'] = cg.instruction_addresses_label.address
 
