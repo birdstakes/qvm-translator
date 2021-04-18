@@ -143,13 +143,6 @@ def main():
         for name, address in symbols.items():
             ET.SubElement(symbol_table, 'SYMBOL', ADDRESS=f'{address:#X}', NAME=name)
 
-        functions = ET.SubElement(program, 'FUNCTIONS')
-        for qvm_start in cg.sub_labels:
-            start = cg.sub_labels[qvm_start].address
-            end = start + cg.sub_sizes[qvm_start]
-            function = ET.SubElement(functions, 'FUNCTION', ENTRY_POINT=f'{start:#X}')
-        ET.SubElement(function, 'ADDRESS_RANGE', START=f'{start:#X}', END=f'{end:#X}')
-
         comments = ET.SubElement(program, 'COMMENTS')
         for qvm_start in cg.sub_labels:
             start = cg.sub_labels[qvm_start].address
