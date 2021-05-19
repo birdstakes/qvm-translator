@@ -1,23 +1,49 @@
-import argparse
 import os
 import sys
 import xml.etree.cElementTree as ET
+from pathlib import Path
 from codegen import *
 from disassembler import *
 from ir import *
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('qvm', help='the qvm to translate')
-    parser.add_argument('--map', help='a q3asm map file')
-    parser.add_argument('--xml', help='dump everything to an xml file for ghidra')
-    parser.add_argument('--code', help='dump the x86 code to CODE')
-    parser.add_argument('--data', help='dump the data section to DATA')
-    parser.add_argument('--lit',  help='dump the lit section to LIT')
-    parser.add_argument('--symbols', help='dump symbols to SYMBOLS')
-    args = parser.parse_args()
+def main(args):
+    if len(args) < 2:
+        sys.exit(f'usage: {args[0]} [qvm files ...] [map files ...]')
 
-    with open(args.qvm, 'rb') as f:
+    qvms = []
+    maps = []
+    for arg in args[1:]:
+        arg = Path(arg)
+        if arg.suffix == '.qvm':
+            qvms.append(arg)
+        elif arg.suffix == '.map':
+            maps.append(arg)
+        else:
+            sys.exit(f'unrecognized file type {arg.suffix}')
+
+    syscall_maps = {
+        'qagame': 'g_syscalls.map',
+        'cgame': 'cg_syscalls.map',
+        'ui': 'ui_syscalls.map'
+    }
+
+    for qvm_path in qvms:
+        syscalls = syscall_maps.get(qvm_path.stem)
+        if syscalls is not None:
+            syscalls_path = Path(__file__).resolve().parent.joinpath(syscalls)
+            map_paths = [syscalls_path] + maps
+        else:
+            map_paths = maps
+
+        translate(
+            qvm_path,
+            map_paths,
+            qvm_path.with_suffix('.xml'),
+            qvm_path.with_suffix('.bytes')
+        )
+
+def translate(qvm_path, map_paths, xml_path, bytes_path):
+    with open(qvm_path, 'rb') as f:
         magic             = int.from_bytes(f.read(4), 'little')
         if magic != 0x12721444:
             sys.exit('Not a valid qvm file')
@@ -31,7 +57,7 @@ def main():
 
         f.seek(code_offset)
         code = disassemble(f.read(code_size))
-        code = code[:instruction_count] # strip off any padding that may have been there
+        code = code[:instruction_count] # strip off padding
 
         f.seek(data_offset)
         data = f.read(data_size)
@@ -56,14 +82,10 @@ def main():
         cg.generate(basic_blocks)
     cg.finish()
 
-    if args.code:
-        with open(args.code, 'wb') as f:
-            f.write(cg.asm.code)
-
     symbols = {}
 
-    if args.map:
-        with open(args.map, 'rb') as f:
+    for map_path in map_paths:
+        with open(map_path, 'rb') as f:
             for line in f:
                 type, address, name = line.split()
                 type = int(type)
@@ -78,84 +100,89 @@ def main():
     symbols['__memcpy'] = cg.memcpy_label.address
     symbols['__instruction_addresses'] = cg.instruction_addresses_label.address
 
-    if args.symbols:
-        with open(args.symbols, 'wb') as f:
-            for name, address in symbols.items():
-                f.write(f'{name} {label.address:#x}\n'.encode())
+    program = ET.Element('PROGRAM')
 
-    if args.data:
-        with open(args.data, 'wb') as f:
-            f.write(data)
+    # all of this is needed for ghidra to detect the right language
+    ET.SubElement(
+        program,
+        'INFO_SOURCE',
+        TOOL='IDA-Pro 7.00 XML plugin v5.0.1 (Python) SDK 700'
+    )
+    ET.SubElement(
+        program,
+        'PROCESSOR',
+        NAME='metapc',
+        ENDIAN='little',
+        ADDRESS_MODEL='32-bit'
+    )
+    ET.SubElement(program, 'COMPILER', NAME='gcc')
 
-    if args.lit:
-        with open(args.lit, 'wb') as f:
-            f.write(lit)
+    memory_map = ET.SubElement(program, 'MEMORY_MAP')
 
-    if args.xml:
-        bytes_filename = os.path.splitext(args.xml)[0] + '.bytes'
+    maps = (
+        ('code', cg.asm.base, 'rx', cg.asm.code),
+        ('data', 0,  'rw', data),
+        ('lit', data_size, 'r', lit),
+        ('bss', data_size + lit_size, 'rw', b'\x00'*bss_size),
+    )
 
-        program = ET.Element('PROGRAM')
+    with open(bytes_path, 'wb') as f:
+        for name, start_addr, permissions, contents in maps:
+            length = len(contents)
+            file_offset = f.tell()
+            f.write(contents)
 
-        # all of this is needed for ghidra to detect the right language
-        ET.SubElement(program, 'INFO_SOURCE', TOOL='IDA-Pro 7.00 XML plugin v5.0.1 (Python) SDK 700')
-        ET.SubElement(program, 'PROCESSOR', NAME='metapc', ENDIAN='little', ADDRESS_MODEL='32-bit')
-        ET.SubElement(program, 'COMPILER', NAME='gcc')
+            section = ET.SubElement(
+                memory_map,
+                'MEMORY_SECTION',
+                NAME=name,
+                START_ADDR=f'{start_addr:#X}',
+                LENGTH=f'{length:#X}',
+                PERMISSIONS=permissions,
+            )
+            ET.SubElement(
+                section,
+                'MEMORY_CONTENTS',
+                START_ADDR=f'{start_addr:#X}',
+                FILE_NAME=bytes_path.name,
+                FILE_OFFSET=f'{file_offset:#X}',
+                LENGTH=f'{length:#X}'
+            )
 
-        memory_map = ET.SubElement(program, 'MEMORY_MAP')
+    code = ET.SubElement(program, 'CODE')
+    ET.SubElement(
+        code,
+        'CODE_BLOCK',
+        START=f'{cg.asm.base:#X}',
+        END=f'{cg.instruction_addresses_label.address:#X}'
+    )
 
-        maps = (
-            ('code', cg.asm.base, 'rx', cg.asm.code),
-            ('data', 0,  'rw', data),
-            ('lit', data_size, 'r', lit),
-            ('bss', data_size + lit_size, 'rw', b'\x00'*bss_size),
+    program_entry_points = ET.SubElement(program, 'PROGRAM_ENTRY_POINTS')
+    ET.SubElement(
+        program_entry_points,
+        'PROGRAM_ENTRY_POINT',
+        ADDRESS=f'{cg.asm.base:#X}'
+    )
+
+    symbol_table = ET.SubElement(program, 'SYMBOL_TABLE')
+    for name, address in symbols.items():
+        ET.SubElement(symbol_table, 'SYMBOL', ADDRESS=f'{address:#X}', NAME=name)
+
+    comments = ET.SubElement(program, 'COMMENTS')
+    for qvm_start in cg.sub_labels:
+        start = cg.sub_labels[qvm_start].address
+        comment = ET.SubElement(
+            comments,
+            'COMMENT',
+            ADDRESS=f'{start:#X}',
+            TYPE='plate'
         )
+        comment.text = f'QVM address: {qvm_start:#x}'
 
-        with open(bytes_filename, 'wb') as f:
-            for name, start_addr, permissions, contents in maps:
-                length = len(contents)
-                file_offset = f.tell()
-                f.write(contents)
-
-                section = ET.SubElement(
-                    memory_map,
-                    'MEMORY_SECTION',
-                    NAME=name,
-                    START_ADDR=f'{start_addr:#X}',
-                    LENGTH=f'{length:#X}',
-                    PERMISSIONS=permissions,
-                )
-                ET.SubElement(
-                    section,
-                    'MEMORY_CONTENTS',
-                    START_ADDR=f'{start_addr:#X}',
-                    FILE_NAME=os.path.basename(bytes_filename),
-                    FILE_OFFSET=f'{file_offset:#X}',
-                    LENGTH=f'{length:#X}'
-                )
-
-        code = ET.SubElement(program, 'CODE')
-        ET.SubElement(code, 'CODE_BLOCK', START=f'{cg.asm.base:#X}', END=f'{cg.instruction_addresses_label.address:#X}')
-
-        program_entry_points = ET.SubElement(program, 'PROGRAM_ENTRY_POINTS')
-        ET.SubElement(program_entry_points, 'PROGRAM_ENTRY_POINT', ADDRESS=f'{cg.asm.base:#X}')
-
-        symbol_table = ET.SubElement(program, 'SYMBOL_TABLE')
-        for name, address in symbols.items():
-            ET.SubElement(symbol_table, 'SYMBOL', ADDRESS=f'{address:#X}', NAME=name)
-
-        comments = ET.SubElement(program, 'COMMENTS')
-        for qvm_start in cg.sub_labels:
-            start = cg.sub_labels[qvm_start].address
-            ET.SubElement(comments, 'COMMENT', ADDRESS=f'{start:#X}', TYPE='plate').text = f'QVM address: {qvm_start:#x}'
-
-        with open(args.xml, 'wb') as f:
-            f.write(b'<?xml version="1.0" standalone="yes"?>\n')
-            f.write(b'<?program_dtd version="1"?>\n')
-            f.write(ET.tostring(program))
-
-    print(f'data segment: offset = {0:#8x} size = {data_size:#8x}')
-    print(f'lit  segment: offset = {data_size:#8x} size = {lit_size:#8x}')
-    print(f'bss  segment: offset = {data_size+lit_size:#8x} size = {bss_size:#8x}')
+    with open(xml_path, 'wb') as f:
+        f.write(b'<?xml version="1.0" standalone="yes"?>\n')
+        f.write(b'<?program_dtd version="1"?>\n')
+        f.write(ET.tostring(program))
 
 if __name__ == '__main__':
-    main()
+    main(sys.argv)
