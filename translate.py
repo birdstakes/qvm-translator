@@ -95,6 +95,12 @@ def translate(qvm_path, map_paths, xml_path, bytes_path):
                     address = cg.sub_labels[address].address
                     assert address is not None
                     symbols[name] = address
+                elif type == 1:
+                    symbols[name] = address
+                elif type == 2:
+                    symbols[name] = data_size + address
+                elif type == 3:
+                    symbols[name] = data_size + lit_size + address
 
     symbols['vmMain'] = cg.asm.base
     symbols['__memcpy'] = cg.memcpy_label.address
