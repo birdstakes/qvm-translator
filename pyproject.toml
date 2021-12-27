@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "qvm-translator"
+version = "0.1.0"
+description = "Translate Quake 3 qvms to x86 Ghidra projects"
+authors = ["Josh Steffen <josh0x53@gmail.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+[tool.poetry.dev-dependencies]
+
+[tool.poetry.scripts]
+qvm-translator = "qvm_translator.translate:main"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

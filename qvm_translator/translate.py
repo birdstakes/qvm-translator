@@ -8,7 +8,8 @@ from .ir import *
 from .syscalls import syscalls
 
 
-def main(args):
+def main():
+    args = sys.argv
     if len(args) < 2:
         sys.exit(f"usage: {args[0]} [qvm files ...] [map files ...]")
 
