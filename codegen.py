@@ -1,11 +1,12 @@
 from assembler import *
 from opcodes import *
 
+
 class Reg:
     def __init__(self, parent):
-        self.parent = parent                 # parent register allocator
-        self.num = parent.get_free_num(self) # register number
-        self.offset = None                   # stack offset if spilled
+        self.parent = parent  # parent register allocator
+        self.num = parent.get_free_num(self)  # register number
+        self.offset = None  # stack offset if spilled
 
     def get(self):
         if self.num is None:
@@ -16,13 +17,14 @@ class Reg:
     def free(self):
         self.parent.free(self)
 
+
 class RegAllocator:
     def __init__(self, spill_callback, unspill_callback, target_regs):
         self.spill_callback = spill_callback
         self.unspill_callback = unspill_callback
         self.target_regs = target_regs
         self.num_regs = len(target_regs)
-        self.regs = [None]*self.num_regs
+        self.regs = [None] * self.num_regs
         self.spills = []
         self.next_spill = 0
 
@@ -49,7 +51,7 @@ class RegAllocator:
         for reg in self.regs:
             if reg is not None:
                 self.spill(reg)
-        self.regs = [None]*self.num_regs
+        self.regs = [None] * self.num_regs
         self.next_spill = 0
 
     def get_free_num(self, reg):
@@ -74,10 +76,11 @@ class RegAllocator:
             self.spills[-1] = reg
             return len(self.spills) - 1
 
+
 class CodeGenerator:
     def __init__(self, use_sse=True):
         self.asm = Assembler(base=0x10000000)
-        self.sub_labels = {} # for CONST calls
+        self.sub_labels = {}  # for CONST calls
         self.sub_sizes = {}
 
         # for BLOCK_COPY instructions
@@ -92,7 +95,7 @@ class CodeGenerator:
     def generate(self, basic_blocks):
         # reset register use for every sub
         self.regs = RegAllocator(self.spill, self.unspill, [EBX, ECX, EDX, ESI, EDI])
-        self.num_spills = 0 # how many slots to allocate for register spilling
+        self.num_spills = 0  # how many slots to allocate for register spilling
         self.arg_size = 0
         self.frame_size = None
         self.frame_size_fixup = None
@@ -108,7 +111,9 @@ class CodeGenerator:
 
         for bb in basic_blocks:
             bb_labels[bb].bind()
-            self.successor_labels = [bb_labels[successor] for successor in bb.successors]
+            self.successor_labels = [
+                bb_labels[successor] for successor in bb.successors
+            ]
             for node in bb.ir:
                 self.set_instruction_addresses(node)
                 reg = self.visit(node)
@@ -122,9 +127,13 @@ class CodeGenerator:
         frame_size = self.frame_size + self.arg_size + self.num_spills * 4
 
         # TODO: this is ugly, maybe add another kind of fixup for arbitrary constants?
-        struct.pack_into('<I', self.asm.code, self.frame_size_fixup - self.asm.base, frame_size)
+        struct.pack_into(
+            "<I", self.asm.code, self.frame_size_fixup - self.asm.base, frame_size
+        )
 
-        self.sub_sizes[sub_address] = self.asm.current_address() - self.sub_labels[sub_address].address
+        self.sub_sizes[sub_address] = (
+            self.asm.current_address() - self.sub_labels[sub_address].address
+        )
 
     def finish(self):
         # generate syscall stubs
@@ -164,7 +173,9 @@ class CodeGenerator:
             padding = 1 + node.instruction.address - len(self.instruction_addresses)
             self.instruction_addresses.extend([0] * padding)
 
-        self.instruction_addresses[node.instruction.address] = self.asm.current_address()
+        self.instruction_addresses[
+            node.instruction.address
+        ] = self.asm.current_address()
 
         for child in node.children:
             self.set_instruction_addresses(child)
@@ -182,12 +193,12 @@ class CodeGenerator:
         self.asm.mov(reg.get(), [EBP - self.spill_offset(reg)])
 
     def visit(self, node):
-        method = 'visit_' + mnemonics[node.opcode]
+        method = "visit_" + mnemonics[node.opcode]
         visitor = getattr(self, method, self.generic_visit)
         return visitor(node)
 
     def generic_visit(self, node):
-        raise Exception(f'No visit_{mnemonics[node.opcode]} method')
+        raise Exception(f"No visit_{mnemonics[node.opcode]} method")
 
     def visit_ENTER(self, node):
         self.frame_size = node.value
@@ -287,7 +298,9 @@ class CodeGenerator:
         dest = self.visit(node.left)
         shift = self.visit(node.right)
 
-        self.asm.mov(EAX, dest.get()) # switch to EAX because we might be trying to shift ECX
+        self.asm.mov(
+            EAX, dest.get()
+        )  # switch to EAX because we might be trying to shift ECX
         self.asm.push(ECX)
         self.asm.mov(ECX, shift.get())
         shift_func(EAX, CL)
@@ -495,7 +508,9 @@ class CodeGenerator:
             self.asm.fld([ESP])
             self.asm.fcomip(1)
             self.asm.fstp(0)
-            self.asm.pop(left.get()) # add esp, 4 would change flags. should we even push in the first place?
+            self.asm.pop(
+                left.get()
+            )  # add esp, 4 would change flags. should we even push in the first place?
         jump_func(self.successor_labels[1])
         self.asm.jmp(self.successor_labels[0])
         left.free()

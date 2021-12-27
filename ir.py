@@ -1,10 +1,12 @@
 from opcodes import *
 
+
 def build_ir(code):
     blocks = build_basic_blocks(code)
     for block in blocks:
         build_ir_nodes(block)
     return blocks
+
 
 class BasicBlock:
     def __init__(self, code=None):
@@ -21,6 +23,7 @@ class BasicBlock:
         self.successors.append(other)
         other.predecessors.append(self)
 
+
 def build_basic_blocks(code):
     boundaries = set()
     blocks = {}
@@ -29,11 +32,11 @@ def build_basic_blocks(code):
     for i, instruction in enumerate(code):
         if EQ <= instruction.opcode <= GEF:
             boundaries.add(instruction.address)
-            boundaries.add(instruction.operand-1)
+            boundaries.add(instruction.operand - 1)
         elif instruction.opcode == JUMP:
             boundaries.add(instruction.address)
             if instruction.operand is not None:
-                boundaries.add(instruction.operand-1)
+                boundaries.add(instruction.operand - 1)
     boundaries.add(code[-1].address)
 
     block = BasicBlock()
@@ -43,7 +46,7 @@ def build_basic_blocks(code):
             next_block = BasicBlock()
             if instruction is not code[-1]:
                 block.add_successor(next_block)
-            block.code = code[start:i+1]
+            block.code = code[start : i + 1]
             block.address = code[start].address
             blocks[block.address] = block
             basic_blocks.append(block)
@@ -59,6 +62,7 @@ def build_basic_blocks(code):
                 block.add_successor(blocks[last_instruction.operand])
 
     return basic_blocks
+
 
 class IRNode:
     def __init__(self, instruction, *children):
@@ -80,10 +84,13 @@ class IRNode:
         return self.children[0]
 
     def __repr__(self):
-        return f'{self.__class__.__name__} {mnemonics.get(self.opcode, str(self.opcode))}'
+        return (
+            f"{self.__class__.__name__} {mnemonics.get(self.opcode, str(self.opcode))}"
+        )
 
     def __str__(self):
         return self.__repr__()
+
 
 def build_ir_nodes(block):
     """Build a list of IR nodes from a basic block.
@@ -152,6 +159,6 @@ def build_ir_nodes(block):
             stack.append(IRNode(instruction, nis, tos))
 
         else:
-            raise Exception(f'unhandled opcode {mnemonics[opcode]}')
+            raise Exception(f"unhandled opcode {mnemonics[opcode]}")
 
     block.ir = nodes
