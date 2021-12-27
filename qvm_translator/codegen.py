@@ -1,5 +1,5 @@
-from assembler import *
-from opcodes import *
+from .assembler import *
+from .opcodes import *
 
 
 class Reg:

@@ -1,4 +1,4 @@
-from opcodes import *
+from .opcodes import *
 
 
 def build_ir(code):

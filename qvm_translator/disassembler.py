@@ -1,5 +1,5 @@
 import io
-from opcodes import *
+from .opcodes import *
 
 
 class Instruction:

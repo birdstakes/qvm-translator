@@ -2,9 +2,9 @@ import os
 import sys
 import xml.etree.cElementTree as ET
 from pathlib import Path
-from codegen import *
-from disassembler import *
-from ir import *
+from .codegen import *
+from .disassembler import *
+from .ir import *
 
 
 def main(args):
@@ -180,7 +180,3 @@ def translate(qvm_path, map_paths, xml_path, bytes_path):
         f.write(b'<?xml version="1.0" standalone="yes"?>\n')
         f.write(b'<?program_dtd version="1"?>\n')
         f.write(ET.tostring(program))
-
-
-if __name__ == "__main__":
-    main(sys.argv)
