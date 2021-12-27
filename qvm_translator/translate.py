@@ -5,6 +5,7 @@ from pathlib import Path
 from .codegen import *
 from .disassembler import *
 from .ir import *
+from .syscalls import syscalls
 
 
 def main(args):
@@ -22,23 +23,10 @@ def main(args):
         else:
             sys.exit(f"unrecognized file type {arg.suffix}")
 
-    syscall_maps = {
-        "qagame": "g_syscalls.map",
-        "cgame": "cg_syscalls.map",
-        "ui": "ui_syscalls.map",
-    }
-
     for qvm_path in qvms:
-        syscalls = syscall_maps.get(qvm_path.stem)
-        if syscalls is not None:
-            syscalls_path = Path(__file__).resolve().parent.joinpath(syscalls)
-            map_paths = [syscalls_path] + maps
-        else:
-            map_paths = maps
-
         translate(
             qvm_path,
-            map_paths,
+            maps,
             qvm_path.with_suffix(".xml"),
             qvm_path.with_suffix(".bytes"),
         )
@@ -85,6 +73,12 @@ def translate(qvm_path, map_paths, xml_path, bytes_path):
     cg.finish()
 
     symbols = {}
+
+    for name, address in syscalls.get(qvm_path.stem, {}).items():
+        if address in cg.sub_labels:
+            address = cg.sub_labels[address].address
+            assert address is not None
+            symbols[name] = address
 
     for map_path in map_paths:
         with open(map_path, "rb") as f:
