@@ -1,5 +1,5 @@
 from .assembler import *
-from .opcodes import *
+from .opcodes import Opcode as Op
 
 
 class Reg:
@@ -193,12 +193,12 @@ class CodeGenerator:
         self.asm.mov(reg.get(), [EBP - self.spill_offset(reg)])
 
     def visit(self, node):
-        method = "visit_" + mnemonics[node.opcode]
+        method = "visit_" + node.opcode.name
         visitor = getattr(self, method, self.generic_visit)
         return visitor(node)
 
     def generic_visit(self, node):
-        raise Exception(f"No visit_{mnemonics[node.opcode]} method")
+        raise Exception(f"No visit_{node.opcode.name} method")
 
     def visit_ENTER(self, node):
         self.frame_size = node.value
@@ -428,7 +428,7 @@ class CodeGenerator:
         self.asm.mov(reg.get(), [reg.get()])
 
     def visit_CALL(self, node):
-        if node.child.opcode == CONST:
+        if node.child.opcode == Op.CONST:
             target = node.child.value
             if target not in self.sub_labels:
                 self.sub_labels[target] = self.asm.label()
@@ -443,7 +443,7 @@ class CodeGenerator:
         return reg
 
     def visit_JUMP(self, node):
-        if node.child.opcode == CONST:
+        if node.child.opcode == Op.CONST:
             # if it's a jump to const, successors[1] should be the target
             self.asm.jmp(self.successor_labels[1])
         else:

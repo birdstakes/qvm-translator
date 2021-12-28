@@ -1,4 +1,4 @@
-from .opcodes import *
+from .opcodes import Opcode as Op, binary_ops, comparison_ops, unary_ops
 
 
 def build_ir(code):
@@ -30,10 +30,10 @@ def build_basic_blocks(code):
     basic_blocks = []
 
     for i, instruction in enumerate(code):
-        if EQ <= instruction.opcode <= GEF:
+        if Op.EQ <= instruction.opcode <= Op.GEF:
             boundaries.add(instruction.address)
             boundaries.add(instruction.operand - 1)
-        elif instruction.opcode == JUMP:
+        elif instruction.opcode == Op.JUMP:
             boundaries.add(instruction.address)
             if instruction.operand is not None:
                 boundaries.add(instruction.operand - 1)
@@ -55,9 +55,9 @@ def build_basic_blocks(code):
 
     for block in basic_blocks:
         last_instruction = block.code[-1]
-        if EQ <= last_instruction.opcode <= GEF:
+        if Op.EQ <= last_instruction.opcode <= Op.GEF:
             block.add_successor(blocks[last_instruction.operand])
-        elif last_instruction.opcode == JUMP:
+        elif last_instruction.opcode == Op.JUMP:
             if last_instruction.operand is not None:
                 block.add_successor(blocks[last_instruction.operand])
 
@@ -84,9 +84,7 @@ class IRNode:
         return self.children[0]
 
     def __repr__(self):
-        return (
-            f"{self.__class__.__name__} {mnemonics.get(self.opcode, str(self.opcode))}"
-        )
+        return f"{self.__class__.__name__} {self.opcode.name}"
 
     def __str__(self):
         return self.__repr__()
@@ -118,37 +116,37 @@ def build_ir_nodes(block):
     for instruction in block.code:
         opcode = instruction.opcode
 
-        if opcode == ENTER:
+        if opcode == Op.ENTER:
             nodes.append(IRNode(instruction))
 
-        elif opcode in (PUSH, CONST, LOCAL):
+        elif opcode in (Op.PUSH, Op.CONST, Op.LOCAL):
             stack.append(IRNode(instruction))
 
-        elif LOAD1 <= opcode <= LOAD4:
+        elif Op.LOAD1 <= opcode <= Op.LOAD4:
             stack.append(IRNode(instruction, stack.pop()))
 
-        elif STORE1 <= opcode <= STORE4:
+        elif Op.STORE1 <= opcode <= Op.STORE4:
             tos, nis = stack.pop(), stack.pop()
             nodes.append(IRNode(instruction, nis, tos))
 
-        elif opcode == BLOCK_COPY or opcode in comparison_ops:
+        elif opcode == Op.BLOCK_COPY or opcode in comparison_ops:
             tos, nis = stack.pop(), stack.pop()
             nodes.append(IRNode(instruction, nis, tos))
 
-        elif opcode in (JUMP, LEAVE):
+        elif opcode in (Op.JUMP, Op.LEAVE):
             nodes.append(IRNode(instruction, stack.pop()))
 
-        elif opcode == ARG:
+        elif opcode == Op.ARG:
             nodes.append(IRNode(instruction, stack.pop()))
 
-        elif opcode == CALL:
+        elif opcode == Op.CALL:
             stack.append(IRNode(instruction, stack.pop()))
 
-        elif opcode == POP:
+        elif opcode == Op.POP:
             # If we're popping the result of a CALL, make it a statement.
             # Otherwise, ignore pops.
             tos = stack.pop()
-            if tos.opcode == CALL:
+            if tos.opcode == Op.CALL:
                 nodes.append(tos)
 
         elif opcode in unary_ops:
@@ -159,6 +157,6 @@ def build_ir_nodes(block):
             stack.append(IRNode(instruction, nis, tos))
 
         else:
-            raise Exception(f"unhandled opcode {mnemonics[opcode]}")
+            raise Exception(f"unhandled opcode {opcode.name}")
 
     block.ir = nodes

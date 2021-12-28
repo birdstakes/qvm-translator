@@ -3,6 +3,7 @@ import xml.etree.cElementTree as ET
 from .codegen import *
 from .disassembler import *
 from .ir import *
+from .opcodes import Opcode as Op
 from .syscalls import syscalls
 
 
@@ -32,7 +33,7 @@ def translate(qvm_path, map_paths, xml_path, bytes_path):
         subs = []
         start = 0
         for i, instruction in enumerate(code):
-            if i > 0 and instruction.opcode == ENTER:
+            if i > 0 and instruction.opcode == Op.ENTER:
                 subs.append(code[start:i])
                 start = i
         subs.append(code[start:])

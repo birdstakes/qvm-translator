@@ -1,5 +1,5 @@
 import io
-from .opcodes import *
+from .opcodes import Opcode as Op
 
 
 class Instruction:
@@ -10,9 +10,9 @@ class Instruction:
 
     def __repr__(self):
         if self.operand:
-            return f"{self.address:#08x}: {mnemonics[self.opcode]} {self.operand:#x}"
+            return f"{self.address:#08x}: {self.opcode.name} {self.operand:#x}"
         else:
-            return f"{self.address:#08x}: {mnemonics[self.opcode]}"
+            return f"{self.address:#08x}: {self.opcode.name}"
 
     __str__ = __repr__
 
@@ -26,16 +26,19 @@ def disassemble(code, address=0):
         if opcode == b"":
             break
 
-        opcode = ord(opcode)
+        opcode = Op(ord(opcode))
         instruction = Instruction(address, opcode)
 
-        if opcode in (ENTER, LEAVE, CONST, LOCAL, BLOCK_COPY) or EQ <= opcode <= GEF:
+        if (
+            opcode in (Op.ENTER, Op.LEAVE, Op.CONST, Op.LOCAL, Op.BLOCK_COPY)
+            or Op.EQ <= opcode <= Op.GEF
+        ):
             instruction.operand = int.from_bytes(code.read(4), "little")
 
-        elif opcode == ARG:
+        elif opcode == Op.ARG:
             instruction.operand = int.from_bytes(code.read(1), "little")
 
-        elif opcode == JUMP and instructions[-1].opcode == CONST:
+        elif opcode == Op.JUMP and instructions[-1].opcode == Op.CONST:
             instruction.operand = instructions[-1].operand
 
         instructions.append(instruction)
