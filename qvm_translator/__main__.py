@@ -1,4 +1,3 @@
-import sys
-from .translate import main
+from .cli import app
 
-main()
+app()

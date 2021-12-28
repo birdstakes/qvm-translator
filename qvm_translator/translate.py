@@ -1,36 +1,9 @@
-import os
 import sys
 import xml.etree.cElementTree as ET
-from pathlib import Path
 from .codegen import *
 from .disassembler import *
 from .ir import *
 from .syscalls import syscalls
-
-
-def main():
-    args = sys.argv
-    if len(args) < 2:
-        sys.exit(f"usage: {args[0]} [qvm files ...] [map files ...]")
-
-    qvms = []
-    maps = []
-    for arg in args[1:]:
-        arg = Path(arg)
-        if arg.suffix == ".qvm":
-            qvms.append(arg)
-        elif arg.suffix == ".map":
-            maps.append(arg)
-        else:
-            sys.exit(f"unrecognized file type {arg.suffix}")
-
-    for qvm_path in qvms:
-        translate(
-            qvm_path,
-            maps,
-            qvm_path.with_suffix(".xml"),
-            qvm_path.with_suffix(".bytes"),
-        )
 
 
 def translate(qvm_path, map_paths, xml_path, bytes_path):

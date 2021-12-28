@@ -7,11 +7,12 @@ license = "MIT"
 
 [tool.poetry.dependencies]
 python = "^3.10"
+typer = "^0.4.0"
 
 [tool.poetry.dev-dependencies]
 
 [tool.poetry.scripts]
-qvm-translator = "qvm_translator.translate:main"
+qvm-translator = "qvm_translator.cli:app"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
